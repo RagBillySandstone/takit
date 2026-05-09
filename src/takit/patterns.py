@@ -54,6 +54,28 @@ def _is_bearish(ohlc: pl.DataFrame) -> pl.Series:
     return ohlc["close"] < ohlc["open"]
 
 
+def _body_range_ratio(
+    open_: pl.Series,
+    close: pl.Series,
+    high: pl.Series,
+    low: pl.Series,
+) -> pl.Series:
+    """Body-to-range ratio for each bar; ``NaN`` on zero-range bars.
+
+    Args:
+        open_: Open price series (possibly shifted).
+        close: Close price series (possibly shifted).
+        high: High price series (possibly shifted).
+        low: Low price series (possibly shifted).
+
+    Returns:
+        Series of body-to-range ratios; ``NaN`` where ``high == low``.
+    """
+    body = (close - open_).abs()
+    safe_range = (high - low).replace(0.0, float("nan"))
+    return body / safe_range
+
+
 def _big_body(
     open_: pl.Series,
     close: pl.Series,
@@ -71,11 +93,9 @@ def _big_body(
         body_ratio: Minimum body-to-range ratio.
 
     Returns:
-        Boolean Series; null on zero-range bars (treated as False downstream).
+        Boolean Series; ``False`` on zero-range bars.
     """
-    body = (close - open_).abs()
-    safe_range = (high - low).replace(0.0, float("nan"))
-    return body / safe_range >= body_ratio
+    return _body_range_ratio(open_, close, high, low) >= body_ratio
 
 
 # ---------------------------------------------------------------------------
@@ -104,7 +124,7 @@ def is_bullish_engulfing(ohlc: pl.DataFrame) -> pl.Series:
     prev_open = ohlc["open"].shift(1)
     prev_close = ohlc["close"].shift(1)
 
-    prior_bearish = _is_bearish(pl.DataFrame({"open": prev_open, "close": prev_close}))
+    prior_bearish = prev_close < prev_open
     curr_bullish = _is_bullish(ohlc)
 
     # Current body engulfs prior body.
@@ -133,7 +153,7 @@ def is_bearish_engulfing(ohlc: pl.DataFrame) -> pl.Series:
     prev_open = ohlc["open"].shift(1)
     prev_close = ohlc["close"].shift(1)
 
-    prior_bullish = _is_bullish(pl.DataFrame({"open": prev_open, "close": prev_close}))
+    prior_bullish = prev_close > prev_open
     curr_bearish = _is_bearish(ohlc)
 
     engulfs = (ohlc["open"] >= prev_close) & (ohlc["close"] <= prev_open)
@@ -274,7 +294,10 @@ def is_doji(ohlc: pl.DataFrame, threshold: float = 0.1) -> pl.Series:
     body = _body(ohlc)
 
     safe_range = candle_range.replace(0.0, float("nan"))
-    return (body / safe_range <= threshold).fill_null(True).alias("doji")
+    # fill_nan on the float ratio before the comparison: a zero-range bar
+    # produces NaN which we map to 0.0 so it satisfies any positive threshold
+    # (a zero-range bar is the purest doji).
+    return ((body / safe_range).fill_nan(0.0) <= threshold).fill_null(True).alias("doji")
 
 
 # ---------------------------------------------------------------------------
@@ -469,23 +492,16 @@ def is_morning_star(
     low_1 = low.shift(1)
     close_1 = close.shift(1)
 
-    # Bar 1 must be a large bearish candle.
-    range_2 = high_2 - low_2
-    body_2 = (open_2 - close_2).abs()
-    safe_range_2 = range_2.replace(0.0, float("nan"))
-    bar1_large_bearish = (close_2 < open_2) & (body_2 / safe_range_2 >= body_ratio)
+    # Bar 1 must be a large bearish candle with a substantial body.
+    bar1_large_bearish = (close_2 < open_2) & (
+        _body_range_ratio(open_2, close_2, high_2, low_2) >= body_ratio
+    )
 
-    # Bar 2 (star) must have a small body.
-    range_1 = high_1 - low_1
-    body_1 = (close_1 - open_1).abs()
-    safe_range_1 = range_1.replace(0.0, float("nan"))
-    bar2_small = body_1 / safe_range_1 <= star_body_ratio
+    # Bar 2 (star) must have a small body indicating indecision.
+    bar2_small = _body_range_ratio(open_1, close_1, high_1, low_1) <= star_body_ratio
 
-    # Bar 3 must be bullish and close above the midpoint of Bar 1's body.
-    range_0 = high - low
-    body_0 = (close - open_).abs()
-    safe_range_0 = range_0.replace(0.0, float("nan"))
-    bar3_bullish = (close > open_) & (body_0 / safe_range_0 >= body_ratio)
+    # Bar 3 must be bullish with a substantial body closing above Bar 1's midpoint.
+    bar3_bullish = (close > open_) & (_body_range_ratio(open_, close, high, low) >= body_ratio)
 
     # Midpoint of Bar 1's bearish body: average of Bar 1's open and close.
     bar1_midpoint = (open_2 + close_2) / 2.0
@@ -537,23 +553,16 @@ def is_evening_star(
     low_1 = low.shift(1)
     close_1 = close.shift(1)
 
-    # Bar 1 must be a large bullish candle.
-    range_2 = high_2 - low_2
-    body_2 = (close_2 - open_2).abs()
-    safe_range_2 = range_2.replace(0.0, float("nan"))
-    bar1_large_bullish = (close_2 > open_2) & (body_2 / safe_range_2 >= body_ratio)
+    # Bar 1 must be a large bullish candle with a substantial body.
+    bar1_large_bullish = (close_2 > open_2) & (
+        _body_range_ratio(open_2, close_2, high_2, low_2) >= body_ratio
+    )
 
-    # Bar 2 (star) must have a small body.
-    range_1 = high_1 - low_1
-    body_1 = (close_1 - open_1).abs()
-    safe_range_1 = range_1.replace(0.0, float("nan"))
-    bar2_small = body_1 / safe_range_1 <= star_body_ratio
+    # Bar 2 (star) must have a small body indicating indecision.
+    bar2_small = _body_range_ratio(open_1, close_1, high_1, low_1) <= star_body_ratio
 
-    # Bar 3 must be bearish and close below the midpoint of Bar 1's body.
-    range_0 = high - low
-    body_0 = (close - open_).abs()
-    safe_range_0 = range_0.replace(0.0, float("nan"))
-    bar3_bearish = (open_ > close) & (body_0 / safe_range_0 >= body_ratio)
+    # Bar 3 must be bearish with a substantial body closing below Bar 1's midpoint.
+    bar3_bearish = (open_ > close) & (_body_range_ratio(open_, close, high, low) >= body_ratio)
 
     # Midpoint of Bar 1's bullish body.
     bar1_midpoint = (open_2 + close_2) / 2.0
@@ -591,7 +600,7 @@ def is_bullish_harami(ohlc: pl.DataFrame) -> pl.Series:
     prev_close = ohlc["close"].shift(1)
 
     # Prior bar must be bearish: open[i-1] > close[i-1].
-    prior_bearish = _is_bearish(pl.DataFrame({"open": prev_open, "close": prev_close}))
+    prior_bearish = prev_close < prev_open
 
     # Current bar must be bullish.
     curr_bullish = _is_bullish(ohlc)
@@ -627,7 +636,7 @@ def is_bearish_harami(ohlc: pl.DataFrame) -> pl.Series:
     prev_close = ohlc["close"].shift(1)
 
     # Prior bar must be bullish: close[i-1] > open[i-1].
-    prior_bullish = _is_bullish(pl.DataFrame({"open": prev_open, "close": prev_close}))
+    prior_bullish = prev_close > prev_open
 
     # Current bar must be bearish.
     curr_bearish = _is_bearish(ohlc)

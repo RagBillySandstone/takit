@@ -110,6 +110,12 @@ class TestDoji:
         result = is_doji(df, threshold=0.1)
         assert not result[0]
 
+    def test_zero_range_bar_is_doji(self) -> None:
+        # high == low == open == close: the purest possible doji.
+        df = _ohlc([10.0], [10.0], [10.0], [10.0])
+        result = is_doji(df, threshold=0.1)
+        assert result[0]
+
 
 class TestThreeWhiteSoldiers:
     def _soldiers(self) -> pl.DataFrame:
