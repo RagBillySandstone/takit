@@ -1,4 +1,4 @@
-# takit
+# PolarTicks
 
 A Polars-native technical analysis library for Python.
 
@@ -33,10 +33,10 @@ straight into your existing Polars pipeline.
 
 ```bash
 # with uv (recommended)
-uv add takit
+uv add polarticks
 
 # with pip
-pip install takit
+pip install polarticks
 ```
 
 Requires Python ≥ 3.11 and Polars ≥ 1.0.
@@ -47,23 +47,23 @@ Requires Python ≥ 3.11 and Polars ≥ 1.0.
 
 ```python
 import polars as pl
-import takit
+import polarticks
 
 # Load your OHLCV data however you like
 df = pl.read_csv("prices.csv")
 
 # Single-series indicators
 close   = df["close"]
-rsi_14  = takit.rsi(close, period=14)          # pl.Series
-ema_20  = takit.ema(close, period=20)           # pl.Series
-macd_df = takit.macd(close)                     # pl.DataFrame (3 columns)
+rsi_14  = polarticks.rsi(close, period=14)          # pl.Series
+ema_20  = polarticks.ema(close, period=20)           # pl.Series
+macd_df = polarticks.macd(close)                     # pl.DataFrame (3 columns)
 
 # Multi-column indicators
-bb  = takit.bollinger_bands(close, period=20)   # pl.DataFrame (5 columns)
-atr = takit.atr(df, period=14)                  # pl.Series
+bb  = polarticks.bollinger_bands(close, period=20)   # pl.DataFrame (5 columns)
+atr = polarticks.atr(df, period=14)                  # pl.Series
 
 # Pattern detection
-signals = takit.is_bullish_engulfing(df)        # pl.Series[bool]
+signals = polarticks.is_bullish_engulfing(df)        # pl.Series[bool]
 
 # Attach results to your DataFrame
 df = df.with_columns([
@@ -78,21 +78,21 @@ df = df.with_columns([
 
 ```python
 import polars as pl
-import takit
+import polarticks
 
 df = pl.read_csv("eurusd_h1.csv")
 close = df["close"]
 
 # Compute a fast/slow EMA crossover and RSI filter
-fast = takit.ema(close, 9)
-slow = takit.ema(close, 21)
+fast = polarticks.ema(close, 9)
+slow = polarticks.ema(close, 21)
 
 df = df.with_columns([
     fast.alias("ema_9"),
     slow.alias("ema_21"),
-    takit.rsi(close, 14).alias("rsi"),
-    takit.crossover(fast, slow).alias("cross_up"),
-    takit.crossunder(fast, slow).alias("cross_dn"),
+    polarticks.rsi(close, 14).alias("rsi"),
+    polarticks.crossover(fast, slow).alias("cross_up"),
+    polarticks.crossunder(fast, slow).alias("cross_dn"),
 ])
 
 # Long entry: crossover AND RSI not overbought
@@ -110,7 +110,7 @@ df = df.with_columns(
 Functions like `sma`, `ema`, `rsi`, `roc`, `hma` accept a `pl.Series`:
 
 ```python
-result = takit.sma(df["close"], period=20)
+result = polarticks.sma(df["close"], period=20)
 ```
 
 ### OHLC / OHLCV indicators
@@ -120,9 +120,9 @@ expected column names are always lowercase: `open`, `high`, `low`, `close`,
 `volume`.
 
 ```python
-result = takit.atr(df, period=14)         # needs high, low, close
-result = takit.mfi(df, period=14)         # needs high, low, close, volume
-result = takit.stochastic(df)             # needs high, low, close
+result = polarticks.atr(df, period=14)         # needs high, low, close
+result = polarticks.mfi(df, period=14)         # needs high, low, close, volume
+result = polarticks.stochastic(df)             # needs high, low, close
 ```
 
 ### Pivot points
@@ -134,7 +134,7 @@ across today's intraday bars however your data model requires.
 ```python
 # Scalar broadcast: yesterday's values repeated across all bars
 n = len(df)
-levels = takit.pivot_points_floor(
+levels = polarticks.pivot_points_floor(
     prev_high  = pl.Series([prev_high]  * n),
     prev_low   = pl.Series([prev_low]   * n),
     prev_close = pl.Series([prev_close] * n),
@@ -142,7 +142,7 @@ levels = takit.pivot_points_floor(
 
 # Rolling: shift the daily OHLC so each bar sees the prior day
 daily = df.group_by_dynamic("date", every="1d").agg(...)
-levels = takit.pivot_points_floor(
+levels = polarticks.pivot_points_floor(
     prev_high  = daily["high"].shift(1),
     prev_low   = daily["low"].shift(1),
     prev_close = daily["close"].shift(1),
@@ -171,7 +171,7 @@ zeroes contaminating your signals.
 signal = pl.col("rsi") < 30   # null where rsi is null, False otherwise (after fill)
 
 # If you need to fill before a join or export:
-rsi = takit.rsi(close, 14).fill_null(strategy="forward")
+rsi = polarticks.rsi(close, 14).fill_null(strategy="forward")
 ```
 
 ---
@@ -199,10 +199,10 @@ and return a `pl.Series`.
 close  = df["close"]
 volume = df["volume"]
 
-sma20  = takit.sma(close, 20)
-ema20  = takit.ema(close, 20)
-hma20  = takit.hma(close, 20)
-vwma20 = takit.vwma(close, volume, 20)
+sma20  = polarticks.sma(close, 20)
+ema20  = polarticks.ema(close, 20)
+hma20  = polarticks.hma(close, 20)
+vwma20 = polarticks.vwma(close, volume, 20)
 ```
 
 **HMA** is particularly useful when you need low lag without excessive noise.
@@ -222,7 +222,7 @@ first `period` bars.
 Relative Strength Index via Wilder's smoothing.  Values in [0, 100].
 
 ```python
-rsi = takit.rsi(df["close"], 14)
+rsi = polarticks.rsi(df["close"], 14)
 overbought = rsi > 70
 oversold   = rsi < 30
 ```
@@ -233,7 +233,7 @@ Returns a DataFrame with three columns: `macd_line`, `macd_signal`,
 `macd_histogram`.
 
 ```python
-m = takit.macd(df["close"])
+m = polarticks.macd(df["close"])
 # m["macd_line"]      — fast EMA minus slow EMA
 # m["macd_signal"]    — EMA of the MACD line
 # m["macd_histogram"] — line minus signal
@@ -244,8 +244,8 @@ m = takit.macd(df["close"])
 Returns `stoch_k` and `stoch_d`.  Both range from 0 to 100.
 
 ```python
-st = takit.stochastic(df)
-cross_up = takit.crossover(st["stoch_k"], st["stoch_d"])
+st = polarticks.stochastic(df)
+cross_up = polarticks.crossover(st["stoch_k"], st["stoch_d"])
 ```
 
 #### `williams_r(ohlc, period=14)` → `pl.Series`
@@ -280,8 +280,8 @@ True Strength Index — double-smoothed momentum oscillator.  Values in
 (−100, +100).  Signal line: apply `ema(tsi, 7)` to the output.
 
 ```python
-tsi_vals = takit.tsi(df["close"])
-signal   = takit.ema(tsi_vals.fill_null(0.0), 7)  # fill before second EMA
+tsi_vals = polarticks.tsi(df["close"])
+signal   = polarticks.ema(tsi_vals.fill_null(0.0), 7)  # fill before second EMA
 ```
 
 #### `ultimate_oscillator(ohlc, period1=7, period2=14, period3=28)` → `pl.Series`
@@ -316,7 +316,7 @@ Returns five columns:
 | `bb_width_{period}` | (Upper − Lower) / Middle |
 
 ```python
-bb = takit.bollinger_bands(df["close"], 20)
+bb = polarticks.bollinger_bands(df["close"], 20)
 squeeze = bb["bb_width_20"] < bb["bb_width_20"].rolling_mean(20)
 ```
 
@@ -366,7 +366,7 @@ Leading nulls: `period − 1` for the DI columns; `2 × (period − 1)` for ADX
 (it is Wilder-smoothed DX, which is itself Wilder-smoothed).
 
 ```python
-result = takit.adx(df, 14)
+result = polarticks.adx(df, 14)
 trending    = result["adx_14"] > 25
 bull_trend  = result["plus_di_14"] > result["minus_di_14"]
 ```
@@ -381,7 +381,7 @@ ATR-based trailing stop that also indicates trend direction.
 | `supertrend_direction` | `+1` (bullish) or `−1` (bearish) |
 
 ```python
-st = takit.supertrend(df, period=10, multiplier=2.0)
+st = polarticks.supertrend(df, period=10, multiplier=2.0)
 entries = st["supertrend_direction"].diff() == 2   # flipped to bullish
 ```
 
@@ -391,7 +391,7 @@ Parabolic SAR dot plot.  Returns `psar` (price level) and `psar_direction`
 (`+1` uptrend / `−1` downtrend).  One leading null (initialised from bar 1).
 
 ```python
-sar = takit.parabolic_sar(df)
+sar = polarticks.parabolic_sar(df)
 flip_to_bull = sar["psar_direction"].diff() == 2
 ```
 
@@ -406,8 +406,8 @@ on up-bars and subtracted on down-bars.  No leading nulls; starts accumulating
 from bar 0.
 
 ```python
-obv = takit.obv(df)
-obv_trend = takit.ema(obv, 20)   # smooth OBV to spot divergences
+obv = polarticks.obv(df)
+obv_trend = polarticks.ema(obv, 20)   # smooth OBV to spot divergences
 ```
 
 #### `vwap(ohlcv, session_start_hour=22)` → `pl.Series`
@@ -418,7 +418,7 @@ Session-anchored VWAP.  If your DataFrame has a `time` column (Polars
 as one session.  No leading nulls.
 
 ```python
-vwap = takit.vwap(df, session_start_hour=0)   # midnight UTC sessions
+vwap = polarticks.vwap(df, session_start_hour=0)   # midnight UTC sessions
 above_vwap = df["close"] > vwap
 ```
 
@@ -462,7 +462,7 @@ Columns: `dm_pp`, `dm_r1`, `dm_s1`.
 
 ```python
 n = len(df)
-levels = takit.pivot_points_floor(
+levels = polarticks.pivot_points_floor(
     pl.Series([yesterday_high]  * n),
     pl.Series([yesterday_low]   * n),
     pl.Series([yesterday_close] * n),
@@ -509,14 +509,14 @@ cannot satisfy the look-back requirement).
 ```python
 # Combine patterns and indicators for a signal
 bull_signals = (
-    takit.is_bullish_engulfing(df)
-    | takit.is_morning_star(df)
-    | takit.is_pin_bar_bullish(df)
+    polarticks.is_bullish_engulfing(df)
+    | polarticks.is_morning_star(df)
+    | polarticks.is_pin_bar_bullish(df)
 )
 
 df = df.with_columns([
     bull_signals.alias("bull_pattern"),
-    takit.rsi(df["close"], 14).alias("rsi"),
+    polarticks.rsi(df["close"], 14).alias("rsi"),
 ])
 
 entries = df.filter(pl.col("bull_pattern") & (pl.col("rsi") < 40))
@@ -537,14 +537,14 @@ price.
 `True` on the single bar where `fast` crosses below `slow`.
 
 ```python
-fast = takit.ema(close, 9)
-slow = takit.ema(close, 21)
+fast = polarticks.ema(close, 9)
+slow = polarticks.ema(close, 21)
 
-long_entry  = takit.crossover(fast, slow)
-short_entry = takit.crossunder(fast, slow)
+long_entry  = polarticks.crossover(fast, slow)
+short_entry = polarticks.crossunder(fast, slow)
 
 # Noise-tolerant version for choppy markets
-long_entry  = takit.crossover(fast, slow, atol=0.05)
+long_entry  = polarticks.crossover(fast, slow, atol=0.05)
 ```
 
 #### `log_returns(series)` → `pl.Series`
@@ -573,7 +573,7 @@ uv run pytest tests/unit/test_null_prefix.py -v
 Type-check the package:
 
 ```bash
-uv run mypy src/takit/ --strict
+uv run mypy src/polarticks/ --strict
 ```
 
 ---

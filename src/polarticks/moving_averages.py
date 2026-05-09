@@ -25,7 +25,7 @@ from functools import reduce
 
 import polars as pl
 
-from takit._validate import _validate_period
+from polarticks._validate import _validate_period
 
 # ---------------------------------------------------------------------------
 # SMA

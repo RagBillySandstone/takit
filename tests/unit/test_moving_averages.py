@@ -1,11 +1,11 @@
-"""Unit tests for takit.moving_averages."""
+"""Unit tests for polarticks.moving_averages."""
 
 from __future__ import annotations
 
 import polars as pl
 import pytest
 
-from takit.moving_averages import (
+from polarticks.moving_averages import (
     dema,
     ema,
     hma,

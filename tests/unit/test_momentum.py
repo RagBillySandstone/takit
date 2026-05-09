@@ -1,11 +1,11 @@
-"""Unit tests for takit.momentum."""
+"""Unit tests for polarticks.momentum."""
 
 from __future__ import annotations
 
 import polars as pl
 import pytest
 
-from takit.momentum import (
+from polarticks.momentum import (
     cci,
     cmf,
     macd,

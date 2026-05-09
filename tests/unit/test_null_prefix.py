@@ -25,9 +25,9 @@ import math
 import polars as pl
 import pytest
 
-import takit
-from takit.moving_averages import mcginley_dynamic, wilder_smooth
-from takit.volatility import true_range
+import polarticks
+from polarticks.moving_averages import mcginley_dynamic, wilder_smooth
+from polarticks.volatility import true_range
 
 # ---------------------------------------------------------------------------
 # Synthetic OHLCV fixture
@@ -96,30 +96,30 @@ class TestSMANullPrefix:
     """SMA: single rolling window → period - 1 leading nulls."""
 
     def test_null_count(self) -> None:
-        assert _leading_nulls(takit.sma(_CLOSE, _P)) == _P - 1
+        assert _leading_nulls(polarticks.sma(_CLOSE, _P)) == _P - 1
 
     def test_no_accidental_zeros(self) -> None:
-        assert _no_accidental_zeros(takit.sma(_CLOSE, _P), _P - 1)
+        assert _no_accidental_zeros(polarticks.sma(_CLOSE, _P), _P - 1)
 
 
 class TestEMANullPrefix:
     """EMA: ewm seeded at period - 1 → period - 1 leading nulls."""
 
     def test_null_count(self) -> None:
-        assert _leading_nulls(takit.ema(_CLOSE, _P)) == _P - 1
+        assert _leading_nulls(polarticks.ema(_CLOSE, _P)) == _P - 1
 
     def test_no_accidental_zeros(self) -> None:
-        assert _no_accidental_zeros(takit.ema(_CLOSE, _P), _P - 1)
+        assert _no_accidental_zeros(polarticks.ema(_CLOSE, _P), _P - 1)
 
 
 class TestWMANullPrefix:
     """WMA: shift-based weighted sum; null propagates naturally → period - 1 leading nulls."""
 
     def test_null_count(self) -> None:
-        assert _leading_nulls(takit.wma(_CLOSE, _P)) == _P - 1
+        assert _leading_nulls(polarticks.wma(_CLOSE, _P)) == _P - 1
 
     def test_no_accidental_zeros(self) -> None:
-        assert _no_accidental_zeros(takit.wma(_CLOSE, _P), _P - 1)
+        assert _no_accidental_zeros(polarticks.wma(_CLOSE, _P), _P - 1)
 
 
 class TestWilderSmoothNullPrefix:
@@ -133,14 +133,14 @@ class TestDEMANullPrefix:
     """DEMA: two EMA passes → 2 * (period - 1) leading nulls."""
 
     def test_null_count(self) -> None:
-        assert _leading_nulls(takit.dema(_CLOSE, _P)) == 2 * (_P - 1)
+        assert _leading_nulls(polarticks.dema(_CLOSE, _P)) == 2 * (_P - 1)
 
 
 class TestTEMANullPrefix:
     """TEMA: three EMA passes → 3 * (period - 1) leading nulls."""
 
     def test_null_count(self) -> None:
-        assert _leading_nulls(takit.tema(_CLOSE, _P)) == 3 * (_P - 1)
+        assert _leading_nulls(polarticks.tema(_CLOSE, _P)) == 3 * (_P - 1)
 
 
 class TestHMANullPrefix:
@@ -149,17 +149,17 @@ class TestHMANullPrefix:
     def test_null_count(self) -> None:
         sqrt_p = round(_P**0.5)
         expected = (_P - 1) + (sqrt_p - 1)
-        assert _leading_nulls(takit.hma(_CLOSE, _P)) == expected
+        assert _leading_nulls(polarticks.hma(_CLOSE, _P)) == expected
 
 
 class TestVWMANullPrefix:
     """VWMA: single rolling window → period - 1 leading nulls."""
 
     def test_null_count(self) -> None:
-        assert _leading_nulls(takit.vwma(_CLOSE, _VOLUME, _P)) == _P - 1
+        assert _leading_nulls(polarticks.vwma(_CLOSE, _VOLUME, _P)) == _P - 1
 
     def test_no_accidental_zeros(self) -> None:
-        assert _no_accidental_zeros(takit.vwma(_CLOSE, _VOLUME, _P), _P - 1)
+        assert _no_accidental_zeros(polarticks.vwma(_CLOSE, _VOLUME, _P), _P - 1)
 
 
 class TestMcginleyDynamicNullPrefix:
@@ -179,7 +179,7 @@ class TestRSINullPrefix:
     non-null samples → period leading nulls total."""
 
     def test_null_count(self) -> None:
-        assert _leading_nulls(takit.rsi(_CLOSE, _P)) == _P
+        assert _leading_nulls(polarticks.rsi(_CLOSE, _P)) == _P
 
 
 class TestMACDNullPrefix:
@@ -191,7 +191,7 @@ class TestMACDNullPrefix:
 
     @pytest.fixture()
     def _df(self) -> pl.DataFrame:
-        return takit.macd(_CLOSE, fast=self._FAST, slow=self._SLOW, signal=self._SIGNAL)
+        return polarticks.macd(_CLOSE, fast=self._FAST, slow=self._SLOW, signal=self._SIGNAL)
 
     def test_macd_line_null_count(self, _df: pl.DataFrame) -> None:
         assert _leading_nulls_col(_df, "macd_line") == self._SLOW - 1
@@ -211,7 +211,7 @@ class TestStochasticNullPrefix:
 
     @pytest.fixture()
     def _df(self) -> pl.DataFrame:
-        return takit.stochastic(_DF, k_period=self._K, d_period=self._D)
+        return polarticks.stochastic(_DF, k_period=self._K, d_period=self._D)
 
     def test_stoch_k_null_count(self, _df: pl.DataFrame) -> None:
         assert _leading_nulls_col(_df, "stoch_k") == self._K - 1
@@ -224,21 +224,21 @@ class TestWilliamsRNullPrefix:
     """Williams %R: single rolling max/min → period - 1 leading nulls."""
 
     def test_null_count(self) -> None:
-        assert _leading_nulls(takit.williams_r(_DF, _P)) == _P - 1
+        assert _leading_nulls(polarticks.williams_r(_DF, _P)) == _P - 1
 
 
 class TestCCINullPrefix:
     """CCI: rolling mean and MAD share the same window → period - 1 leading nulls."""
 
     def test_null_count(self) -> None:
-        assert _leading_nulls(takit.cci(_DF, _P)) == _P - 1
+        assert _leading_nulls(polarticks.cci(_DF, _P)) == _P - 1
 
 
 class TestROCNullPrefix:
     """ROC: implemented as shift(period) → period leading nulls (not period - 1)."""
 
     def test_null_count(self) -> None:
-        assert _leading_nulls(takit.roc(_CLOSE, _P)) == _P
+        assert _leading_nulls(polarticks.roc(_CLOSE, _P)) == _P
 
 
 class TestMFINullPrefix:
@@ -246,14 +246,14 @@ class TestMFINullPrefix:
     counts from bar 0 → period - 1 leading nulls."""
 
     def test_null_count(self) -> None:
-        assert _leading_nulls(takit.mfi(_DF, _P)) == _P - 1
+        assert _leading_nulls(polarticks.mfi(_DF, _P)) == _P - 1
 
 
 class TestCMFNullPrefix:
     """CMF: single rolling sum/division → period - 1 leading nulls."""
 
     def test_null_count(self) -> None:
-        assert _leading_nulls(takit.cmf(_DF, _P)) == _P - 1
+        assert _leading_nulls(polarticks.cmf(_DF, _P)) == _P - 1
 
 
 class TestTSINullPrefix:
@@ -264,7 +264,7 @@ class TestTSINullPrefix:
 
     def test_null_count(self) -> None:
         expected = self._SLOW + self._FAST - 1
-        assert _leading_nulls(takit.tsi(_CLOSE, slow=self._SLOW, fast=self._FAST)) == expected
+        assert _leading_nulls(polarticks.tsi(_CLOSE, slow=self._SLOW, fast=self._FAST)) == expected
 
 
 class TestUltimateOscillatorNullPrefix:
@@ -274,7 +274,7 @@ class TestUltimateOscillatorNullPrefix:
     _P1, _P2, _P3 = 7, 14, 28
 
     def test_null_count(self) -> None:
-        result = takit.ultimate_oscillator(_DF, self._P1, self._P2, self._P3)
+        result = polarticks.ultimate_oscillator(_DF, self._P1, self._P2, self._P3)
         assert _leading_nulls(result) == self._P3 - 1
 
 
@@ -294,14 +294,14 @@ class TestATRNullPrefix:
     """ATR: Wilder smooth of true_range → period - 1 leading nulls."""
 
     def test_null_count(self) -> None:
-        assert _leading_nulls(takit.atr(_DF, _P)) == _P - 1
+        assert _leading_nulls(polarticks.atr(_DF, _P)) == _P - 1
 
 
 class TestBollingerBandsNullPrefix:
     """Bollinger Bands: all columns share one rolling window → period - 1 nulls."""
 
     def test_null_count_all_columns(self) -> None:
-        df = takit.bollinger_bands(_CLOSE, _P)
+        df = polarticks.bollinger_bands(_CLOSE, _P)
         for col in df.columns:
             assert _leading_nulls_col(df, col) == _P - 1, f"unexpected nulls in {col}"
 
@@ -310,7 +310,7 @@ class TestKeltnerChannelsNullPrefix:
     """Keltner Channels: EMA and ATR share the same period → period - 1 nulls."""
 
     def test_null_count_all_columns(self) -> None:
-        df = takit.keltner_channels(_DF, ema_period=_P, atr_period=_P)
+        df = polarticks.keltner_channels(_DF, ema_period=_P, atr_period=_P)
         for col in df.columns:
             assert _leading_nulls_col(df, col) == _P - 1, f"unexpected nulls in {col}"
 
@@ -323,7 +323,7 @@ class TestChaikinVolatilityNullPrefix:
 
     def test_null_count(self) -> None:
         expected = (self._EMA_P - 1) + self._ROC_P
-        result = takit.chaikin_volatility(_DF, ema_period=self._EMA_P, roc_period=self._ROC_P)
+        result = polarticks.chaikin_volatility(_DF, ema_period=self._EMA_P, roc_period=self._ROC_P)
         assert _leading_nulls(result) == expected
 
 
@@ -332,7 +332,7 @@ class TestHistoricalVolatilityNullPrefix:
     period non-null samples → period leading nulls total."""
 
     def test_null_count(self) -> None:
-        assert _leading_nulls(takit.historical_volatility(_CLOSE, _P)) == _P
+        assert _leading_nulls(polarticks.historical_volatility(_CLOSE, _P)) == _P
 
 
 class TestUlcerIndexNullPrefix:
@@ -340,7 +340,7 @@ class TestUlcerIndexNullPrefix:
     the same size → 2 * (period - 1) leading nulls."""
 
     def test_null_count(self) -> None:
-        assert _leading_nulls(takit.ulcer_index(_CLOSE, _P)) == 2 * (_P - 1)
+        assert _leading_nulls(polarticks.ulcer_index(_CLOSE, _P)) == 2 * (_P - 1)
 
 
 # ---------------------------------------------------------------------------
@@ -352,7 +352,7 @@ class TestDonchianChannelsNullPrefix:
     """Donchian Channels: rolling max/min → period - 1 leading nulls."""
 
     def test_null_count_all_columns(self) -> None:
-        df = takit.donchian_channels(_DF, _P)
+        df = polarticks.donchian_channels(_DF, _P)
         for col in df.columns:
             assert _leading_nulls_col(df, col) == _P - 1, f"unexpected nulls in {col}"
 
@@ -365,15 +365,15 @@ class TestADXNullPrefix:
     """
 
     def test_plus_di_null_count(self) -> None:
-        df = takit.adx(_DF, _P)
+        df = polarticks.adx(_DF, _P)
         assert _leading_nulls_col(df, f"plus_di_{_P}") == _P - 1
 
     def test_minus_di_null_count(self) -> None:
-        df = takit.adx(_DF, _P)
+        df = polarticks.adx(_DF, _P)
         assert _leading_nulls_col(df, f"minus_di_{_P}") == _P - 1
 
     def test_adx_null_count(self) -> None:
-        df = takit.adx(_DF, _P)
+        df = polarticks.adx(_DF, _P)
         assert _leading_nulls_col(df, f"adx_{_P}") == 2 * (_P - 1)
 
 
@@ -386,15 +386,15 @@ class TestSupertrendNullPrefix:
     """
 
     def test_null_count_band(self) -> None:
-        df = takit.supertrend(_DF, _P)
+        df = polarticks.supertrend(_DF, _P)
         assert _leading_nulls_col(df, "supertrend") == _P - 1
 
     def test_null_count_direction(self) -> None:
-        df = takit.supertrend(_DF, _P)
+        df = polarticks.supertrend(_DF, _P)
         assert _leading_nulls_col(df, "supertrend_direction") == _P - 1
 
     def test_no_accidental_zeros_in_band(self) -> None:
-        df = takit.supertrend(_DF, _P)
+        df = polarticks.supertrend(_DF, _P)
         assert _no_accidental_zeros(df["supertrend"], _P - 1)
 
 
@@ -402,7 +402,7 @@ class TestParabolicSARNullPrefix:
     """PSAR: initialised from bar 1; bar 0 is always null → 1 leading null."""
 
     def test_null_count(self) -> None:
-        df = takit.parabolic_sar(_DF)
+        df = polarticks.parabolic_sar(_DF)
         assert _leading_nulls_col(df, "psar") == 1
         assert _leading_nulls_col(df, "psar_direction") == 1
 
@@ -416,16 +416,16 @@ class TestOBVNullPrefix:
     """OBV: cumulative sum from bar 0 with no warm-up → 0 leading nulls."""
 
     def test_null_count(self) -> None:
-        assert _leading_nulls(takit.obv(_DF)) == 0
+        assert _leading_nulls(polarticks.obv(_DF)) == 0
 
 
 class TestVWAPNullPrefix:
     """VWAP: session-anchored from the first bar → 0 leading nulls."""
 
     def test_null_count(self) -> None:
-        assert _leading_nulls(takit.vwap(_DF)) == 0
+        assert _leading_nulls(polarticks.vwap(_DF)) == 0
 
     def test_vwap_bands_null_count(self) -> None:
-        df = takit.vwap_bands(_DF)
+        df = polarticks.vwap_bands(_DF)
         for col in df.columns:
             assert _leading_nulls_col(df, col) == 0, f"unexpected nulls in {col}"

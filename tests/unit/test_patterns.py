@@ -1,10 +1,10 @@
-"""Unit tests for takit.patterns."""
+"""Unit tests for polarticks.patterns."""
 
 from __future__ import annotations
 
 import polars as pl
 
-from takit.patterns import (
+from polarticks.patterns import (
     is_bearish_engulfing,
     is_bearish_harami,
     is_bullish_engulfing,

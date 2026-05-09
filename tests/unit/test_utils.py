@@ -1,4 +1,4 @@
-"""Unit tests for takit.utils.
+"""Unit tests for polarticks.utils.
 
 Covers crossover, crossunder, log_returns, and simple_returns.
 """
@@ -10,7 +10,7 @@ import math
 import polars as pl
 import pytest
 
-from takit.utils import crossover, crossunder, log_returns, simple_returns
+from polarticks.utils import crossover, crossunder, log_returns, simple_returns
 
 
 class TestCrossover:

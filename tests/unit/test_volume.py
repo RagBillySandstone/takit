@@ -1,4 +1,4 @@
-"""Unit tests for takit.volume."""
+"""Unit tests for polarticks.volume."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from datetime import UTC, datetime
 import polars as pl
 import pytest
 
-from takit.volume import obv, vwap, vwap_bands
+from polarticks.volume import obv, vwap, vwap_bands
 
 
 def _make_ohlcv(n: int = 10) -> pl.DataFrame:

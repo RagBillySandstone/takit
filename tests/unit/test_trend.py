@@ -1,11 +1,11 @@
-"""Unit tests for takit.trend."""
+"""Unit tests for polarticks.trend."""
 
 from __future__ import annotations
 
 import polars as pl
 import pytest
 
-from takit.trend import adx, donchian_channels, parabolic_sar, supertrend
+from polarticks.trend import adx, donchian_channels, parabolic_sar, supertrend
 
 OHLC = pl.DataFrame(
     {

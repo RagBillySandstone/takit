@@ -29,7 +29,7 @@ uv run mypy src/
 
 ## Architecture
 
-**takit** is a Polars-native technical analysis library. The only runtime dependency is `polars>=1.0.0`. The package follows a flat module structure under `src/takit/`, with one file per indicator category:
+**polarticks** is a Polars-native technical analysis library. The only runtime dependency is `polars>=1.0.0`. The package follows a flat module structure under `src/polarticks/`, with one file per indicator category:
 
 | Module | Contents |
 |---|---|
@@ -42,7 +42,7 @@ uv run mypy src/
 | `patterns.py` | 12 candlestick pattern detectors |
 | `utils.py` | crossover, crossunder, log_returns, simple_returns |
 
-All 45+ public functions are re-exported from `src/takit/__init__.py` via `__all__`.
+All 45+ public functions are re-exported from `src/polarticks/__init__.py` via `__all__`.
 
 ## Indicator Implementation Patterns
 

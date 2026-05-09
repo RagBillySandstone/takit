@@ -1,11 +1,11 @@
-"""Unit tests for takit.levels."""
+"""Unit tests for polarticks.levels."""
 
 from __future__ import annotations
 
 import polars as pl
 import pytest
 
-from takit.levels import (
+from polarticks.levels import (
     pivot_points_camarilla,
     pivot_points_demark,
     pivot_points_fibonacci,

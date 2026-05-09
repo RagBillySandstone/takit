@@ -8,18 +8,18 @@ Import from the top-level package for convenience:
 
 Or import from the specific module for clarity:
 
-    from takit.momentum import rsi
-    from takit.volatility import atr, keltner_channels
+    from polarticks.momentum import rsi
+    from polarticks.volatility import atr, keltner_channels
 """
 
-from takit.levels import (
+from polarticks.levels import (
     pivot_points_camarilla,
     pivot_points_demark,
     pivot_points_fibonacci,
     pivot_points_floor,
     pivot_points_woodie,
 )
-from takit.momentum import (
+from polarticks.momentum import (
     cci,
     cmf,
     macd,
@@ -31,7 +31,7 @@ from takit.momentum import (
     ultimate_oscillator,
     williams_r,
 )
-from takit.moving_averages import (
+from polarticks.moving_averages import (
     dema,
     ema,
     hma,
@@ -42,7 +42,7 @@ from takit.moving_averages import (
     wilder_smooth,
     wma,
 )
-from takit.patterns import (
+from polarticks.patterns import (
     is_bearish_engulfing,
     is_bearish_harami,
     is_bullish_engulfing,
@@ -56,9 +56,9 @@ from takit.patterns import (
     is_three_black_crows,
     is_three_white_soldiers,
 )
-from takit.trend import adx, donchian_channels, parabolic_sar, supertrend
-from takit.utils import crossover, crossunder, log_returns, simple_returns
-from takit.volatility import (
+from polarticks.trend import adx, donchian_channels, parabolic_sar, supertrend
+from polarticks.utils import crossover, crossunder, log_returns, simple_returns
+from polarticks.volatility import (
     atr,
     bollinger_bands,
     chaikin_volatility,
@@ -67,7 +67,7 @@ from takit.volatility import (
     true_range,
     ulcer_index,
 )
-from takit.volume import obv, vwap, vwap_bands
+from polarticks.volume import obv, vwap, vwap_bands
 
 __all__ = [
     # Moving averages

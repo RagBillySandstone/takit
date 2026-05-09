@@ -13,9 +13,9 @@ from __future__ import annotations
 
 import polars as pl
 
-from takit._validate import _validate_period
-from takit.moving_averages import wilder_smooth
-from takit.volatility import atr
+from polarticks._validate import _validate_period
+from polarticks.moving_averages import wilder_smooth
+from polarticks.volatility import atr
 
 
 def donchian_channels(ohlc: pl.DataFrame, period: int = 20) -> pl.DataFrame:

@@ -1,6 +1,6 @@
 # Changelog
 
-All notable changes to takit are documented here.
+All notable changes to polarticks are documented here.
 
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
@@ -9,7 +9,7 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [0.1.0] — 2026-05-08
 
-Initial public release of takit, a Polars-native technical analysis library.
+Initial public release of polarticks, a Polars-native technical analysis library.
 
 ### Moving Averages
 - `sma` — Simple Moving Average

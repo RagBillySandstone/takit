@@ -1,11 +1,11 @@
-"""Unit tests for takit.volatility."""
+"""Unit tests for polarticks.volatility."""
 
 from __future__ import annotations
 
 import polars as pl
 import pytest
 
-from takit.volatility import (
+from polarticks.volatility import (
     atr,
     bollinger_bands,
     chaikin_volatility,
