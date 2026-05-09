@@ -22,7 +22,8 @@ import math
 
 import polars as pl
 
-from takit.moving_averages import _validate_period, ema, wilder_smooth
+from takit._validate import _validate_period
+from takit.moving_averages import ema, wilder_smooth
 
 # ---------------------------------------------------------------------------
 # True Range

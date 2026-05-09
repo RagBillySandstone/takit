@@ -13,7 +13,8 @@ from __future__ import annotations
 
 import polars as pl
 
-from takit.moving_averages import _validate_period, wilder_smooth
+from takit._validate import _validate_period
+from takit.moving_averages import wilder_smooth
 from takit.volatility import atr
 
 

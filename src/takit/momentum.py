@@ -23,7 +23,8 @@ from __future__ import annotations
 
 import polars as pl
 
-from takit.moving_averages import _validate_period, ema, sma, wilder_smooth
+from takit._validate import _validate_period
+from takit.moving_averages import ema, sma, wilder_smooth
 
 # ---------------------------------------------------------------------------
 # RSI
