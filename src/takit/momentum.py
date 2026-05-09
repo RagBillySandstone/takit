@@ -284,7 +284,9 @@ def roc(series: pl.Series, period: int = 10) -> pl.Series:
     """
     _validate_period(period, "ROC")
     past = series.shift(period)
-    return (100.0 * (series - past) / past).alias(f"roc_{period}")
+    # fill_nan converts inf/nan (zero past price) to null rather than silently
+    # propagating an undefined value.
+    return (100.0 * (series - past) / past).fill_nan(None).alias(f"roc_{period}")
 
 
 # ---------------------------------------------------------------------------

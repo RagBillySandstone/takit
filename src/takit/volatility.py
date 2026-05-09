@@ -228,7 +228,13 @@ def chaikin_volatility(
     hl_ema = ema(ohlc["high"] - ohlc["low"], ema_period)
     past_ema = hl_ema.shift(roc_period)
 
-    return (100.0 * (hl_ema - past_ema) / past_ema).alias(f"chaikin_vol_{ema_period}_{roc_period}")
+    # fill_nan converts inf/nan (zero past EMA, e.g. flat zero-range window)
+    # to null rather than silently propagating an undefined value.
+    return (
+        (100.0 * (hl_ema - past_ema) / past_ema)
+        .fill_nan(None)
+        .alias(f"chaikin_vol_{ema_period}_{roc_period}")
+    )
 
 
 # ---------------------------------------------------------------------------
