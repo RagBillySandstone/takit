@@ -116,14 +116,13 @@ def wma(series: pl.Series, period: int) -> pl.Series:
 
     # Sum shifted copies of the series, each multiplied by its linear weight.
     # shift(k) moves the series forward k bars, so shift(0) = most recent,
-    # shift(period-1) = oldest bar in the window.
-    weighted = sum(series.shift(period - 1 - i) * weights[i] for i in range(period))
-
-    # Null out the warm-up period to match the convention of every other indicator.
-    null_prefix: list[float | None] = [None] * (period - 1)
-    ones_suffix: list[float | None] = [1.0] * (len(series) - (period - 1))
-    mask = pl.Series(null_prefix + ones_suffix)
-    return ((weighted / weight_sum) * mask).alias(f"wma_{period}")
+    # shift(period-1) = oldest bar in the window.  Null propagates naturally
+    # through the summation — no explicit warm-up mask is needed.
+    weighted: pl.Series = reduce(
+        operator.add,
+        (series.shift(period - 1 - i) * weights[i] for i in range(period)),
+    )
+    return (weighted / weight_sum).alias(f"wma_{period}")
 
 
 # ---------------------------------------------------------------------------

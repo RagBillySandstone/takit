@@ -113,7 +113,7 @@ class TestEMANullPrefix:
 
 
 class TestWMANullPrefix:
-    """WMA: shift-based weighted sum; mask applied → period - 1 leading nulls."""
+    """WMA: shift-based weighted sum; null propagates naturally → period - 1 leading nulls."""
 
     def test_null_count(self) -> None:
         assert _leading_nulls(takit.wma(_CLOSE, _P)) == _P - 1
