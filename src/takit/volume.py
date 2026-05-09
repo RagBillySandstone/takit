@@ -3,10 +3,14 @@ Volume and price-volume indicators.
 
 Functions
 ---------
-vwap    Session-anchored Volume Weighted Average Price
+vwap        Session-anchored Volume Weighted Average Price
+vwap_bands  VWAP with ±1σ / ±2σ standard-deviation bands
+obv         On-Balance Volume (running signed cumulative volume)
 """
 
 from __future__ import annotations
+
+import math
 
 import polars as pl
 
@@ -80,3 +84,145 @@ def vwap(
         vwap_values.append(running_tp_vol / running_vol if running_vol > 0 else float("nan"))
 
     return pl.Series("vwap", vwap_values, dtype=pl.Float64)
+
+
+def vwap_bands(
+    ohlc_vol: pl.DataFrame,
+    session_start_hour: int = 22,
+) -> pl.DataFrame:
+    """Session-anchored VWAP with ±1σ and ±2σ standard-deviation bands.
+
+    Extends VWAP by also computing the cumulative session variance of the
+    typical price weighted by volume.  The standard deviation at each bar is:
+
+        σ = sqrt(Σ(tp² × vol) / Σ(vol)  −  VWAP²)
+
+    This is the population standard deviation of the volume-weighted typical
+    price distribution up to that bar within the session.
+
+    Session handling follows :func:`vwap` exactly: resets at
+    ``session_start_hour`` UTC when a ``time`` column is present; otherwise
+    treats the entire series as one session.
+
+    Args:
+        ohlc_vol: DataFrame with columns ``high``, ``low``, ``close``,
+                  ``volume``, and optionally ``time`` (Datetime).
+        session_start_hour: UTC hour at which a new session begins (default 22).
+
+    Returns:
+        DataFrame with columns ``vwap``, ``upper_1``, ``lower_1``,
+        ``upper_2``, and ``lower_2``.
+    """
+    high = ohlc_vol["high"]
+    low = ohlc_vol["low"]
+    close = ohlc_vol["close"]
+    volume = ohlc_vol["volume"].cast(pl.Float64)
+
+    tp = (high + low + close) / 3.0
+    tp_vol = tp * volume
+    tp2_vol = tp * tp * volume
+
+    if "time" in ohlc_vol.columns:
+        hours = ohlc_vol["time"].dt.hour()
+        is_session_start = (hours == session_start_hour) | (
+            pl.Series([True] + [False] * (len(ohlc_vol) - 1))
+        )
+    else:
+        is_session_start = pl.Series([True] + [False] * (len(ohlc_vol) - 1))
+
+    tp_vol_list = tp_vol.to_list()
+    tp2_vol_list = tp2_vol.to_list()
+    vol_list = volume.to_list()
+    starts = is_session_start.to_list()
+
+    vwap_values: list[float] = []
+    upper_1: list[float] = []
+    lower_1: list[float] = []
+    upper_2: list[float] = []
+    lower_2: list[float] = []
+
+    cum_tp_vol = 0.0
+    cum_tp2_vol = 0.0
+    cum_vol = 0.0
+
+    for tpv, tp2v, vol, is_start in zip(tp_vol_list, tp2_vol_list, vol_list, starts, strict=True):
+        if is_start:
+            cum_tp_vol = 0.0
+            cum_tp2_vol = 0.0
+            cum_vol = 0.0
+
+        cum_tp_vol += tpv
+        cum_tp2_vol += tp2v
+        cum_vol += vol
+
+        if cum_vol > 0:
+            vwap_val = cum_tp_vol / cum_vol
+            # Population variance: E[tp²] - E[tp]² (volume-weighted).
+            variance = max(0.0, cum_tp2_vol / cum_vol - vwap_val * vwap_val)
+            std = math.sqrt(variance)
+        else:
+            vwap_val = float("nan")
+            std = float("nan")
+
+        vwap_values.append(vwap_val)
+        upper_1.append(vwap_val + std)
+        lower_1.append(vwap_val - std)
+        upper_2.append(vwap_val + 2.0 * std)
+        lower_2.append(vwap_val - 2.0 * std)
+
+    return pl.DataFrame(
+        {
+            "vwap": vwap_values,
+            "upper_1": upper_1,
+            "lower_1": lower_1,
+            "upper_2": upper_2,
+            "lower_2": lower_2,
+        },
+        schema={
+            "vwap": pl.Float64,
+            "upper_1": pl.Float64,
+            "lower_1": pl.Float64,
+            "upper_2": pl.Float64,
+            "lower_2": pl.Float64,
+        },
+    )
+
+
+def obv(ohlc_vol: pl.DataFrame) -> pl.Series:
+    """On-Balance Volume (OBV) — running signed cumulative volume.
+
+    OBV accumulates volume with a sign determined by whether the close
+    is higher or lower than the prior close:
+
+        - close[t] > close[t-1]: add volume (buying pressure).
+        - close[t] < close[t-1]: subtract volume (selling pressure).
+        - close[t] = close[t-1]: no change.
+
+    The first bar contributes zero volume (no prior close exists to compare).
+
+    OBV is used to confirm price trends: rising OBV alongside rising price
+    confirms an uptrend; divergence may signal weakening momentum.
+
+    Args:
+        ohlc_vol: DataFrame with columns ``close`` and ``volume``.
+
+    Returns:
+        Series of cumulative OBV values (dtype Float64).
+    """
+    close = ohlc_vol["close"]
+    volume = ohlc_vol["volume"].cast(pl.Float64)
+
+    prev_close = close.shift(1)
+
+    # pl.when/then/otherwise with Series operands produces a lazy Expr; materialise
+    # it via pl.select() so the result is a concrete Series.
+    signed_volume: pl.Series = pl.select(
+        pl.when(close > prev_close)
+        .then(volume)
+        .when(close < prev_close)
+        .then(-volume)
+        .otherwise(pl.lit(0.0))
+    ).to_series()
+
+    # Bar 0 has no prior close, so its signed volume is null → treat as zero.
+    return signed_volume.fill_null(0.0).cum_sum().alias("obv")
