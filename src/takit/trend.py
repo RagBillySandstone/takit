@@ -4,13 +4,17 @@ Trend-following indicators.
 Functions
 ---------
 donchian_channels   Highest high / lowest low channel over a rolling window
+adx                 Average Directional Index with +DI and -DI components
+supertrend          ATR-based trailing stop/trend indicator
+parabolic_sar       Parabolic SAR — acceleration-factor dot plot
 """
 
 from __future__ import annotations
 
 import polars as pl
 
-from takit.moving_averages import _validate_period
+from takit.moving_averages import _validate_period, wilder_smooth
+from takit.volatility import atr
 
 
 def donchian_channels(ohlc: pl.DataFrame, period: int = 20) -> pl.DataFrame:
@@ -43,5 +47,289 @@ def donchian_channels(ohlc: pl.DataFrame, period: int = 20) -> pl.DataFrame:
             f"dc_upper_{period}": upper,
             f"dc_lower_{period}": lower,
             f"dc_middle_{period}": middle,
+        }
+    )
+
+
+# ---------------------------------------------------------------------------
+# ADX
+# ---------------------------------------------------------------------------
+
+
+def adx(ohlc: pl.DataFrame, period: int = 14) -> pl.DataFrame:
+    """Average Directional Index (ADX) with +DI and -DI components.
+
+    ADX quantifies the *strength* of a trend irrespective of direction.
+    Readings above 25 indicate a trending market; below 20 suggest
+    consolidation.  +DI > -DI indicates bullish momentum; -DI > +DI
+    indicates bearish momentum.
+
+    Algorithm (Wilder, 1978):
+        1. Compute +DM and -DM directional movement for each bar.
+        2. Apply Wilder smoothing to +DM, -DM, and True Range.
+        3. +DI = 100 × Wilder(+DM) / Wilder(TR).
+        4. -DI = 100 × Wilder(-DM) / Wilder(TR).
+        5. DX  = 100 × |+DI − -DI| / (+DI + -DI).
+        6. ADX = Wilder(DX, period).
+
+    Args:
+        ohlc: DataFrame with columns ``high``, ``low``, ``close``.
+        period: Wilder smoothing period (default 14).
+
+    Returns:
+        DataFrame with columns ``adx_{period}``, ``plus_di_{period}``,
+        ``minus_di_{period}``.
+
+    Raises:
+        ValueError: If ``period < 1``.
+    """
+    _validate_period(period, "ADX")
+
+    high = ohlc["high"]
+    low = ohlc["low"]
+
+    # Raw directional movement: only the larger up or down move counts per bar.
+    up_move = high - high.shift(1)
+    down_move = low.shift(1) - low
+
+    # pl.when/then produces an Expr; pl.select() materialises it to a Series.
+    plus_dm = (
+        pl.select(pl.when((up_move > down_move) & (up_move > 0)).then(up_move).otherwise(0.0))
+        .to_series()
+        .fill_null(0.0)
+    )
+    minus_dm = (
+        pl.select(pl.when((down_move > up_move) & (down_move > 0)).then(down_move).otherwise(0.0))
+        .to_series()
+        .fill_null(0.0)
+    )
+
+    # Wilder-smooth DM components and ATR in one pass each.
+    atr_values = atr(ohlc, period)
+    smoothed_plus = wilder_smooth(plus_dm, period)
+    smoothed_minus = wilder_smooth(minus_dm, period)
+
+    plus_di = (100.0 * smoothed_plus / atr_values).fill_nan(0.0)
+    minus_di = (100.0 * smoothed_minus / atr_values).fill_nan(0.0)
+
+    dx_num = (plus_di - minus_di).abs()
+    dx_den = plus_di + minus_di
+    # fill_nan covers the rare case where both DI values are zero.
+    dx = (100.0 * dx_num / dx_den).fill_nan(0.0)
+
+    adx_values = wilder_smooth(dx, period)
+
+    return pl.DataFrame(
+        {
+            f"adx_{period}": adx_values,
+            f"plus_di_{period}": plus_di,
+            f"minus_di_{period}": minus_di,
+        }
+    )
+
+
+# ---------------------------------------------------------------------------
+# Supertrend
+# ---------------------------------------------------------------------------
+
+
+def supertrend(
+    ohlc: pl.DataFrame,
+    period: int = 7,
+    multiplier: float = 3.0,
+) -> pl.DataFrame:
+    """Supertrend — ATR-based trailing stop and trend direction indicator.
+
+    The Supertrend line acts as a dynamic support (uptrend) or resistance
+    (downtrend).  When price crosses the band it signals a trend flip.
+
+    Algorithm:
+        basic_upper = (high + low) / 2 + multiplier × ATR
+        basic_lower = (high + low) / 2 − multiplier × ATR
+
+        final_upper[t]:
+            If basic_upper[t] < final_upper[t-1] OR close[t-1] > final_upper[t-1]:
+                final_upper[t] = basic_upper[t]
+            Else:
+                final_upper[t] = final_upper[t-1]
+
+        final_lower[t]:
+            If basic_lower[t] > final_lower[t-1] OR close[t-1] < final_lower[t-1]:
+                final_lower[t] = basic_lower[t]
+            Else:
+                final_lower[t] = final_lower[t-1]
+
+        direction: +1 when close > final_upper (bullish), -1 otherwise.
+
+    The first ``period`` bars are ``null`` (ATR warm-up).
+
+    Args:
+        ohlc: DataFrame with columns ``high``, ``low``, ``close``.
+        period: ATR lookback period (default 7).
+        multiplier: ATR multiplier for band width (default 3.0).
+
+    Returns:
+        DataFrame with columns ``supertrend`` (band level) and
+        ``supertrend_direction`` (+1 / -1).
+
+    Raises:
+        ValueError: If ``period < 1``.
+    """
+    _validate_period(period, "Supertrend")
+
+    high = ohlc["high"].to_list()
+    low = ohlc["low"].to_list()
+    close = ohlc["close"].to_list()
+    atr_vals = atr(ohlc, period).to_list()
+
+    n = len(close)
+    band: list[float | None] = [None] * n
+    direction: list[int | None] = [None] * n
+
+    # Track the running final bands across bars (sequential by nature).
+    final_upper = 0.0
+    final_lower = 0.0
+
+    for idx in range(n):
+        if atr_vals[idx] is None:
+            # Still in the ATR warm-up period.
+            continue
+
+        hl2 = (high[idx] + low[idx]) / 2.0
+        basic_upper = hl2 + multiplier * atr_vals[idx]  # type: ignore[operator]
+        basic_lower = hl2 - multiplier * atr_vals[idx]  # type: ignore[operator]
+
+        if idx == period:
+            # First bar with a valid ATR — initialise both bands.
+            final_upper = basic_upper
+            final_lower = basic_lower
+        else:
+            prev_close = close[idx - 1]
+            # Upper band ratchets down (tightens) unless price broke above it.
+            final_upper = (
+                basic_upper
+                if (basic_upper < final_upper or prev_close > final_upper)
+                else final_upper
+            )
+            # Lower band ratchets up (tightens) unless price broke below it.
+            final_lower = (
+                basic_lower
+                if (basic_lower > final_lower or prev_close < final_lower)
+                else final_lower
+            )
+
+        # Trend direction: bullish when close is above the upper band.
+        if close[idx] > final_upper:
+            direction[idx] = 1
+            band[idx] = final_lower
+        else:
+            direction[idx] = -1
+            band[idx] = final_upper
+
+    return pl.DataFrame(
+        {
+            "supertrend": pl.Series("supertrend", band, dtype=pl.Float64),
+            "supertrend_direction": pl.Series("supertrend_direction", direction, dtype=pl.Int8),
+        }
+    )
+
+
+# ---------------------------------------------------------------------------
+# Parabolic SAR
+# ---------------------------------------------------------------------------
+
+
+def parabolic_sar(
+    ohlc: pl.DataFrame,
+    initial_af: float = 0.02,
+    step_af: float = 0.02,
+    max_af: float = 0.20,
+) -> pl.DataFrame:
+    """Parabolic SAR — acceleration-factor trailing stop.
+
+    The SAR (Stop And Reverse) dot trails price and accelerates toward it
+    as new extremes are set.  It is primarily used to determine trend
+    direction and place trailing stops.
+
+    Algorithm (Wilder, 1978):
+        In an uptrend:
+            SAR[t] = SAR[t-1] + AF × (EP − SAR[t-1])
+            If close[t] < SAR[t]: flip to downtrend, reset AF = initial_af.
+            If new high > EP: EP = new high; AF = min(AF + step_af, max_af).
+
+        In a downtrend the same logic applies with highs and lows swapped.
+
+    The indicator initialises on bar 1 (two bars needed to determine the
+    first SAR).  Bar 0 is always ``null``.
+
+    Args:
+        ohlc: DataFrame with columns ``high``, ``low``, ``close``.
+        initial_af: Starting acceleration factor (default 0.02).
+        step_af: AF increment each time a new extreme is set (default 0.02).
+        max_af: Maximum allowed acceleration factor (default 0.20).
+
+    Returns:
+        DataFrame with columns ``psar`` (SAR level) and
+        ``psar_direction`` (+1 uptrend / -1 downtrend).
+    """
+    high = ohlc["high"].to_list()
+    low = ohlc["low"].to_list()
+    close = ohlc["close"].to_list()
+    n = len(close)
+
+    sar_out: list[float | None] = [None] * n
+    dir_out: list[int | None] = [None] * n
+
+    if n < 2:
+        return pl.DataFrame(
+            {
+                "psar": pl.Series("psar", sar_out, dtype=pl.Float64),
+                "psar_direction": pl.Series("psar_direction", dir_out, dtype=pl.Int8),
+            }
+        )
+
+    # Seed: guess uptrend if bar 1 closes higher than bar 0.
+    is_uptrend = close[1] >= close[0]
+    af = initial_af
+    ep = high[0] if is_uptrend else low[0]
+    sar = low[0] if is_uptrend else high[0]
+
+    for idx in range(1, n):
+        # Project the SAR one step using the acceleration formula.
+        sar = sar + af * (ep - sar)
+
+        # Clamp SAR to the last two prior bars' extremes (Wilder's rule).
+        if is_uptrend:
+            sar = min(sar, low[idx - 1], low[max(0, idx - 2)])
+        else:
+            sar = max(sar, high[idx - 1], high[max(0, idx - 2)])
+
+        # Check for trend reversal.
+        if is_uptrend and close[idx] < sar:
+            is_uptrend = False
+            sar = ep  # Flip SAR to the prior extreme point.
+            ep = low[idx]
+            af = initial_af
+        elif not is_uptrend and close[idx] > sar:
+            is_uptrend = True
+            sar = ep
+            ep = high[idx]
+            af = initial_af
+        else:
+            # No reversal — update EP and AF if a new extreme was set.
+            if is_uptrend and high[idx] > ep:
+                ep = high[idx]
+                af = min(af + step_af, max_af)
+            elif not is_uptrend and low[idx] < ep:
+                ep = low[idx]
+                af = min(af + step_af, max_af)
+
+        sar_out[idx] = sar
+        dir_out[idx] = 1 if is_uptrend else -1
+
+    return pl.DataFrame(
+        {
+            "psar": pl.Series("psar", sar_out, dtype=pl.Float64),
+            "psar_direction": pl.Series("psar_direction", dir_out, dtype=pl.Int8),
         }
     )
