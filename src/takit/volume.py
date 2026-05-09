@@ -60,21 +60,20 @@ def vwap(
             pl.Series([True] + [False] * (len(ohlc_vol) - 1))
         )
     else:
-        # No time column: treat entire series as one session.
-        is_session_start = pl.Series([True] + [False] * (len(ohlc_vol) - 1))
+        # No time column: entire series is one session — vectorise directly.
+        return (tp_vol.cum_sum() / volume.cum_sum()).alias("vwap")
 
     # Walk through rows and accumulate cumulative sums, resetting at each
-    # session boundary.  This is inherently sequential so a Python loop is used;
-    # for M1/M5 data the number of sessions is small relative to bar count.
-    cum_tp_vol = tp_vol.to_list()
-    cum_vol = volume.to_list()
+    # session boundary.  Sequential by nature — resets cannot be vectorised.
+    tp_vol_list = tp_vol.to_list()
+    vol_list = volume.to_list()
     starts = is_session_start.to_list()
 
     vwap_values: list[float] = []
     running_tp_vol = 0.0
     running_vol = 0.0
 
-    for tpv, vol, is_start in zip(cum_tp_vol, cum_vol, starts, strict=True):
+    for tpv, vol, is_start in zip(tp_vol_list, vol_list, starts, strict=True):
         if is_start:
             running_tp_vol = 0.0
             running_vol = 0.0
@@ -128,7 +127,30 @@ def vwap_bands(
             pl.Series([True] + [False] * (len(ohlc_vol) - 1))
         )
     else:
-        is_session_start = pl.Series([True] + [False] * (len(ohlc_vol) - 1))
+        # No time column: entire series is one session — vectorise directly.
+        cum_tp_vol_s = tp_vol.cum_sum()
+        cum_tp2_vol_s = tp2_vol.cum_sum()
+        cum_vol_s = volume.cum_sum()
+        vwap_vals = cum_tp_vol_s / cum_vol_s
+        # Population variance: E[tp²] − E[tp]²; clamp to 0 for float rounding.
+        variance = (cum_tp2_vol_s / cum_vol_s - vwap_vals**2).clip(lower_bound=0.0)
+        std_vals = variance**0.5
+        return pl.DataFrame(
+            {
+                "vwap": vwap_vals,
+                "upper_1": vwap_vals + std_vals,
+                "lower_1": vwap_vals - std_vals,
+                "upper_2": vwap_vals + 2.0 * std_vals,
+                "lower_2": vwap_vals - 2.0 * std_vals,
+            },
+            schema={
+                "vwap": pl.Float64,
+                "upper_1": pl.Float64,
+                "lower_1": pl.Float64,
+                "upper_2": pl.Float64,
+                "lower_2": pl.Float64,
+            },
+        )
 
     tp_vol_list = tp_vol.to_list()
     tp2_vol_list = tp2_vol.to_list()
