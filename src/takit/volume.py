@@ -63,8 +63,9 @@ def vwap(
         # No time column: entire series is one session — vectorise directly.
         return (tp_vol.cum_sum() / volume.cum_sum()).alias("vwap")
 
-    # Walk through rows and accumulate cumulative sums, resetting at each
-    # session boundary.  Sequential by nature — resets cannot be vectorised.
+    # Walk through rows accumulating cumulative sums, resetting on each session
+    # boundary.  A vectorised alternative (group_by session ID + cum_sum) is
+    # possible but requires restructuring the data; the loop is kept for clarity.
     tp_vol_list = tp_vol.to_list()
     vol_list = volume.to_list()
     starts = is_session_start.to_list()

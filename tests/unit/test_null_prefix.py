@@ -380,9 +380,9 @@ class TestADXNullPrefix:
 class TestSupertrendNullPrefix:
     """Supertrend: follows ATR warm-up → period - 1 leading nulls.
 
-    The initialisation branch fires at idx == period (one bar after the first
-    valid ATR at idx == period - 1), but both output arrays remain null only
-    for the true ATR warm-up span (0 .. period - 2).
+    The initialisation branch fires at ``idx == period - 1`` (the first bar
+    with a valid ATR); both output arrays remain null only for the warm-up
+    span (0 .. period - 2).
     """
 
     def test_null_count_band(self) -> None:
