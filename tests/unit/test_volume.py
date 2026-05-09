@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from datetime import UTC, datetime
 
 import polars as pl
@@ -12,12 +13,14 @@ from takit.volume import obv, vwap, vwap_bands
 
 def _make_ohlcv(n: int = 10) -> pl.DataFrame:
     """Build a minimal OHLC+volume DataFrame for testing."""
-    return pl.DataFrame({
-        "high":   [float(i + 1) for i in range(n)],
-        "low":    [float(i) for i in range(n)],
-        "close":  [float(i) + 0.5 for i in range(n)],
-        "volume": [100] * n,
-    })
+    return pl.DataFrame(
+        {
+            "high": [float(i + 1) for i in range(n)],
+            "low": [float(i) for i in range(n)],
+            "close": [float(i) + 0.5 for i in range(n)],
+            "volume": [100] * n,
+        }
+    )
 
 
 class TestVWAP:
@@ -34,14 +37,16 @@ class TestVWAP:
 
     def test_equal_volume_equals_average_tp(self) -> None:
         # With equal volume each bar, VWAP = cumulative mean of typical price.
-        df = pl.DataFrame({
-            "high":   [11.0, 12.0],
-            "low":    [ 9.0, 10.0],
-            "close":  [10.0, 11.0],
-            "volume": [100,  100],
-        })
+        df = pl.DataFrame(
+            {
+                "high": [11.0, 12.0],
+                "low": [9.0, 10.0],
+                "close": [10.0, 11.0],
+                "volume": [100, 100],
+            }
+        )
         result = vwap(df)
-        tp0 = (11.0 + 9.0 + 10.0) / 3.0   # 10.0
+        tp0 = (11.0 + 9.0 + 10.0) / 3.0  # 10.0
         tp1 = (12.0 + 10.0 + 11.0) / 3.0  # 11.0
         assert result[0] == pytest.approx(tp0)
         assert result[1] == pytest.approx((tp0 + tp1) / 2.0)
@@ -51,25 +56,27 @@ class TestVWAP:
         times = [
             datetime(2024, 1, 1, 22, 0, tzinfo=UTC),  # session 1 start
             datetime(2024, 1, 1, 23, 0, tzinfo=UTC),
-            datetime(2024, 1, 2,  0, 0, tzinfo=UTC),
+            datetime(2024, 1, 2, 0, 0, tzinfo=UTC),
             datetime(2024, 1, 2, 22, 0, tzinfo=UTC),  # session 2 start
             datetime(2024, 1, 2, 23, 0, tzinfo=UTC),
-            datetime(2024, 1, 3,  0, 0, tzinfo=UTC),
+            datetime(2024, 1, 3, 0, 0, tzinfo=UTC),
         ]
-        df = pl.DataFrame({
-            "time":   pl.Series(times).cast(pl.Datetime("us", "UTC")),
-            "high":   [11.0] * 6,
-            "low":    [ 9.0] * 6,
-            "close":  [10.0] * 6,
-            "volume": [100]  * 6,
-        })
+        df = pl.DataFrame(
+            {
+                "time": pl.Series(times).cast(pl.Datetime("us", "UTC")),
+                "high": [11.0] * 6,
+                "low": [9.0] * 6,
+                "close": [10.0] * 6,
+                "volume": [100] * 6,
+            }
+        )
         result = vwap(df, session_start_hour=22)
         # All typical prices are 10.0, so VWAP is always 10.0.
         for v in result.to_list():
             assert v == pytest.approx(10.0)
         # After reset, bar 3 should restart accumulation — same value here,
         # but we verify no NaN leaks through from the prior session.
-        assert not any(v != v for v in result.to_list())  # NaN check
+        assert not any(math.isnan(v) for v in result.to_list())
 
 
 class TestVWAPBands:
@@ -92,18 +99,32 @@ class TestVWAPBands:
     def test_bands_symmetric_around_vwap(self) -> None:
         # upper and lower bands must be equidistant from VWAP.
         df = pl.DataFrame(
-            {"high": [11.0, 12.0, 13.0], "low": [9.0, 10.0, 11.0], "close": [10.0, 11.0, 12.0], "volume": [100, 200, 150]}
+            {
+                "high": [11.0, 12.0, 13.0],
+                "low": [9.0, 10.0, 11.0],
+                "close": [10.0, 11.0, 12.0],
+                "volume": [100, 200, 150],
+            }
         )
         result = vwap_bands(df)
         for i in range(len(result)):
             vwap_val = result["vwap"][i]
-            assert result["upper_1"][i] - vwap_val == pytest.approx(vwap_val - result["lower_1"][i], abs=1e-10)
-            assert result["upper_2"][i] - vwap_val == pytest.approx(vwap_val - result["lower_2"][i], abs=1e-10)
+            assert result["upper_1"][i] - vwap_val == pytest.approx(
+                vwap_val - result["lower_1"][i], abs=1e-10
+            )
+            assert result["upper_2"][i] - vwap_val == pytest.approx(
+                vwap_val - result["lower_2"][i], abs=1e-10
+            )
 
     def test_upper_2_wider_than_upper_1(self) -> None:
         # 2σ band must always be at least as wide as the 1σ band.
         df = pl.DataFrame(
-            {"high": [11.0, 12.0, 13.0], "low": [9.0, 10.0, 11.0], "close": [10.0, 11.0, 12.0], "volume": [100, 200, 150]}
+            {
+                "high": [11.0, 12.0, 13.0],
+                "low": [9.0, 10.0, 11.0],
+                "close": [10.0, 11.0, 12.0],
+                "volume": [100, 200, 150],
+            }
         )
         result = vwap_bands(df)
         for i in range(len(result)):
