@@ -204,3 +204,26 @@ class TestMcginleyDynamic:
         valid = [v for v in result.to_list() if v is not None]
         for value in valid:
             assert value == pytest.approx(5.0, rel=1e-9)
+
+    def test_insufficient_non_null_seed_returns_all_null(self) -> None:
+        # seed_window collects non-null values from raw_values[:period].
+        # [None, None, 1.0][:3] → only 1 non-null, need 3 → early return all-null.
+        sparse = pl.Series([None, None, 1.0, 2.0, 3.0], dtype=pl.Float64)
+        result = mcginley_dynamic(sparse, 3)
+        assert all(v is None for v in result.to_list())
+
+    def test_null_mid_series_propagates_null(self) -> None:
+        # A None value that appears after the warm-up should produce None at that index.
+        series_with_gap = pl.Series([1.0, 2.0, 3.0, None, 5.0], dtype=pl.Float64)
+        result = mcginley_dynamic(series_with_gap, 3)
+        assert result[3] is None
+
+    def test_zero_seed_propagates_null_on_all_subsequent_bars(self) -> None:
+        # Seed SMA = 0.0 triggers the `md == 0.0` guard in the main loop,
+        # setting output to None and skipping the md update for every later bar.
+        series_zeros = pl.Series([0.0, 0.0, 0.0, 1.0, 2.0], dtype=pl.Float64)
+        result = mcginley_dynamic(series_zeros, 3)
+        # Seed is at index 2 (= 0.0); bars 3 and 4 must be None.
+        assert result[2] == pytest.approx(0.0)
+        assert result[3] is None
+        assert result[4] is None

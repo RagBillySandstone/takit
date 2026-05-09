@@ -132,6 +132,120 @@ class TestVWAPBands:
             assert result["lower_2"][i] <= result["lower_1"][i]
 
 
+class TestVWAPBandsWithTimeColumn:
+    """Tests for the session-loop path of vwap_bands (time column present).
+
+    Without a time column the function takes a vectorised shortcut (lines 130-153).
+    These tests exercise the row-by-row accumulation path (lines 155-195) that
+    is only reached when ohlc_vol contains a ``time`` column.
+    """
+
+    def _make_timed_df(
+        self,
+        highs: list[float],
+        lows: list[float],
+        closes: list[float],
+        volumes: list[int],
+        session_start_hour: int = 22,
+        offset_hours: list[int] | None = None,
+    ) -> pl.DataFrame:
+        """Build a DataFrame with a UTC Datetime ``time`` column for vwap_bands."""
+        from datetime import UTC, datetime
+
+        if offset_hours is None:
+            # Default: first bar is session start, subsequent bars are +1 h each.
+            offset_hours = [session_start_hour + i for i in range(len(highs))]
+
+        times = [datetime(2024, 1, 1, h % 24, 0, tzinfo=UTC) for h in offset_hours]
+        return pl.DataFrame(
+            {
+                "time": pl.Series(times).cast(pl.Datetime("us", "UTC")),
+                "high": highs,
+                "low": lows,
+                "close": closes,
+                "volume": volumes,
+            }
+        )
+
+    def test_output_columns_and_length_with_time(self) -> None:
+        """Session-loop path returns the same five columns as the vectorised path."""
+        df = self._make_timed_df(
+            [11.0, 12.0, 11.0],
+            [9.0, 10.0, 9.0],
+            [10.0, 11.0, 10.0],
+            [100, 100, 100],
+        )
+        result = vwap_bands(df, session_start_hour=22)
+        assert set(result.columns) == {"vwap", "upper_1", "lower_1", "upper_2", "lower_2"}
+        assert len(result) == 3
+
+    def test_session_reset_restarts_vwap_to_typical_price(self) -> None:
+        """On the first bar of a new session VWAP equals that bar's typical price."""
+        df = self._make_timed_df(
+            highs=[12.0, 13.0, 20.0],
+            lows=[10.0, 11.0, 18.0],
+            closes=[11.0, 12.0, 19.0],
+            volumes=[100, 100, 100],
+            session_start_hour=22,
+            # bar 0: session start (hour 22), bar 1: hour 23, bar 2: new session (hour 22)
+            offset_hours=[22, 23, 22 + 24],
+        )
+        result = vwap_bands(df, session_start_hour=22)
+        # After reset at bar 2: only that bar is in the new session.
+        expected_tp = (20.0 + 18.0 + 19.0) / 3.0
+        assert result["vwap"][2] == pytest.approx(expected_tp)
+        # Single bar in session → σ = 0 → all bands equal VWAP.
+        assert result["upper_1"][2] == pytest.approx(expected_tp)
+        assert result["lower_1"][2] == pytest.approx(expected_tp)
+
+    def test_bands_symmetric_with_time_column(self) -> None:
+        """Upper and lower bands are equidistant from VWAP on the session-loop path."""
+        df = self._make_timed_df(
+            [11.0, 12.0, 13.0],
+            [9.0, 10.0, 11.0],
+            [10.0, 11.0, 12.0],
+            [100, 200, 150],
+        )
+        result = vwap_bands(df, session_start_hour=22)
+        for i in range(len(result)):
+            vwap_val = result["vwap"][i]
+            assert result["upper_1"][i] - vwap_val == pytest.approx(
+                vwap_val - result["lower_1"][i], abs=1e-10
+            )
+            assert result["upper_2"][i] - vwap_val == pytest.approx(
+                vwap_val - result["lower_2"][i], abs=1e-10
+            )
+
+    def test_zero_volume_bar_produces_nan(self) -> None:
+        """A session-start bar with zero cumulative volume fills NaN (not a crash)."""
+        df = self._make_timed_df(
+            highs=[11.0, 12.0],
+            lows=[9.0, 10.0],
+            closes=[10.0, 11.0],
+            volumes=[0, 100],  # first bar has no volume → cum_vol = 0
+        )
+        result = vwap_bands(df, session_start_hour=22)
+        # Bar 0 has zero volume: VWAP and bands are NaN, not an error.
+        assert math.isnan(result["vwap"][0])
+        assert math.isnan(result["upper_1"][0])
+        # Bar 1 accumulates volume normally.
+        assert not math.isnan(result["vwap"][1])
+
+    def test_multi_session_no_nan_leakage(self) -> None:
+        """VWAP values after a session reset must not carry NaN from the prior session."""
+        df = self._make_timed_df(
+            highs=[11.0] * 4,
+            lows=[9.0] * 4,
+            closes=[10.0] * 4,
+            volumes=[100] * 4,
+            session_start_hour=22,
+            offset_hours=[22, 23, 22 + 24, 23 + 24],
+        )
+        result = vwap_bands(df, session_start_hour=22)
+        for val in result["vwap"].to_list():
+            assert not math.isnan(val)
+
+
 class TestOBV:
     def test_rising_closes_accumulate_volume(self) -> None:
         # Each bar closes higher: OBV increases by volume each bar.

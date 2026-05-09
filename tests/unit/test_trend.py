@@ -156,3 +156,29 @@ class TestParabolicSAR:
     def test_custom_af_parameters_accepted(self) -> None:
         result = parabolic_sar(OHLC_LONG, initial_af=0.01, step_af=0.01, max_af=0.10)
         assert len(result) == len(OHLC_LONG)
+
+    def test_single_bar_returns_all_null(self) -> None:
+        # n=1 < 2 triggers the early-return guard (line 285 in trend.py).
+        one_bar = pl.DataFrame(
+            {"open": [1.0], "high": [2.0], "low": [0.5], "close": [1.5], "volume": [100]}
+        )
+        result = parabolic_sar(one_bar)
+        assert len(result) == 1
+        assert result["psar"][0] is None
+        assert result["psar_direction"][0] is None
+
+    def test_empty_input_returns_empty_dataframe(self) -> None:
+        # n=0 < 2 also triggers the early-return guard.
+        empty = pl.DataFrame(
+            {
+                "open": pl.Series([], dtype=pl.Float64),
+                "high": pl.Series([], dtype=pl.Float64),
+                "low": pl.Series([], dtype=pl.Float64),
+                "close": pl.Series([], dtype=pl.Float64),
+                "volume": pl.Series([], dtype=pl.Int64),
+            }
+        )
+        result = parabolic_sar(empty)
+        assert len(result) == 0
+        assert "psar" in result.columns
+        assert "psar_direction" in result.columns
