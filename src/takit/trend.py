@@ -200,7 +200,7 @@ def supertrend(
         basic_upper = hl2 + multiplier * atr_vals[idx]
         basic_lower = hl2 - multiplier * atr_vals[idx]
 
-        if idx == period:
+        if idx == period - 1:
             # First bar with a valid ATR — initialise both bands.
             final_upper = basic_upper
             final_lower = basic_lower
