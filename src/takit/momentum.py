@@ -7,12 +7,16 @@ are ``null``.
 
 Functions
 ---------
-rsi         Relative Strength Index (Wilder, default period 14)
-macd        MACD line, signal line, and histogram
-stochastic  Stochastic Oscillator (%K and %D)
-williams_r  Williams %R
-cci         Commodity Channel Index
-roc         Rate of Change (percentage)
+rsi                 Relative Strength Index (Wilder, default period 14)
+macd                MACD line, signal line, and histogram
+stochastic          Stochastic Oscillator (%K and %D)
+williams_r          Williams %R
+cci                 Commodity Channel Index
+roc                 Rate of Change (percentage)
+mfi                 Money Flow Index (volume-weighted RSI)
+cmf                 Chaikin Money Flow
+tsi                 True Strength Index (double-smoothed momentum)
+ultimate_oscillator Weighted blend of three time-frame oscillators
 """
 
 from __future__ import annotations
@@ -280,3 +284,216 @@ def roc(series: pl.Series, period: int = 10) -> pl.Series:
     _validate_period(period, "ROC")
     past = series.shift(period)
     return (100.0 * (series - past) / past).alias(f"roc_{period}")
+
+
+# ---------------------------------------------------------------------------
+# MFI
+# ---------------------------------------------------------------------------
+
+
+def mfi(ohlc_vol: pl.DataFrame, period: int = 14) -> pl.Series:
+    """Money Flow Index — volume-weighted RSI.
+
+    MFI combines price and volume to identify overbought/oversold conditions.
+    Like RSI, readings above 80 suggest overbought and below 20 suggest
+    oversold, but MFI is more sensitive to volume divergence.
+
+    Algorithm:
+        typical_price = (high + low + close) / 3
+        money_flow    = typical_price × volume
+        Positive money flow: bars where typical_price > prior typical_price.
+        Negative money flow: bars where typical_price ≤ prior typical_price.
+        MFI = 100 − 100 / (1 + sum_pos_mf / sum_neg_mf)   over period bars.
+
+    Args:
+        ohlc_vol: DataFrame with columns ``high``, ``low``, ``close``, ``volume``.
+        period: Rolling window length (default 14).
+
+    Returns:
+        Series of MFI values in [0, 100].
+
+    Raises:
+        ValueError: If ``period < 2``.
+    """
+    _validate_period(period, "MFI", min_period=2)
+
+    high = ohlc_vol["high"]
+    low = ohlc_vol["low"]
+    close = ohlc_vol["close"]
+    volume = ohlc_vol["volume"].cast(pl.Float64)
+
+    tp = (high + low + close) / 3.0
+    money_flow = tp * volume
+    tp_prev = tp.shift(1)
+
+    # Allocate each bar's money flow to the positive or negative bucket.
+    pos_mf = (
+        pl.select(pl.when(tp > tp_prev).then(money_flow).otherwise(0.0)).to_series().fill_null(0.0)
+    )
+    neg_mf = (
+        pl.select(pl.when(tp <= tp_prev).then(money_flow).otherwise(0.0)).to_series().fill_null(0.0)
+    )
+
+    pos_sum = pos_mf.rolling_sum(window_size=period, min_samples=period)
+    neg_sum = neg_mf.rolling_sum(window_size=period, min_samples=period)
+
+    mfr = pos_sum / neg_sum
+    # When neg_sum == 0 (no selling pressure), MFR is inf → MFI = 100.
+    return (100.0 - 100.0 / (1.0 + mfr)).fill_nan(100.0).alias(f"mfi_{period}")
+
+
+# ---------------------------------------------------------------------------
+# CMF
+# ---------------------------------------------------------------------------
+
+
+def cmf(ohlc_vol: pl.DataFrame, period: int = 20) -> pl.Series:
+    """Chaikin Money Flow.
+
+    CMF measures buying and selling pressure by combining the Money Flow
+    Multiplier (position of close within the bar's range) with volume.
+    Values above 0 indicate accumulation (buying pressure); below 0
+    indicate distribution (selling pressure).
+
+    Algorithm:
+        money_flow_multiplier = (2 × close − high − low) / (high − low)
+        money_flow_volume     = multiplier × volume
+        CMF = Σ(money_flow_volume, n) / Σ(volume, n)
+
+    Args:
+        ohlc_vol: DataFrame with columns ``high``, ``low``, ``close``, ``volume``.
+        period: Rolling window length (default 20).
+
+    Returns:
+        Series of CMF values in the range [-1, 1].
+
+    Raises:
+        ValueError: If ``period < 1``.
+    """
+    _validate_period(period, "CMF")
+
+    high = ohlc_vol["high"]
+    low = ohlc_vol["low"]
+    close = ohlc_vol["close"]
+    volume = ohlc_vol["volume"].cast(pl.Float64)
+
+    hl_range = high - low
+    # fill_nan handles zero-range (doji-like) bars by zeroing their contribution.
+    mfm = ((2.0 * close - high - low) / hl_range).fill_nan(0.0)
+    mfv = mfm * volume
+
+    mfv_sum = mfv.rolling_sum(window_size=period, min_samples=period)
+    vol_sum = volume.rolling_sum(window_size=period, min_samples=period)
+
+    return (mfv_sum / vol_sum).alias(f"cmf_{period}")
+
+
+# ---------------------------------------------------------------------------
+# TSI
+# ---------------------------------------------------------------------------
+
+
+def tsi(
+    series: pl.Series,
+    slow: int = 25,
+    fast: int = 13,
+) -> pl.Series:
+    """True Strength Index — double-smoothed momentum oscillator.
+
+    TSI measures trend direction and magnitude using double EMA smoothing
+    of raw momentum (price changes).  Values above 0 are bullish; below 0
+    are bearish.  Typical signal line: EMA(TSI, 7).
+
+        momentum            = close[t] − close[t-1]
+        double_smooth       = EMA(EMA(momentum, slow), fast)
+        double_smooth_abs   = EMA(EMA(|momentum|, slow), fast)
+        TSI                 = 100 × double_smooth / double_smooth_abs
+
+    Args:
+        series: Close price series.
+        slow: Period of the first (slower) EMA smoothing pass (default 25).
+        fast: Period of the second (faster) EMA smoothing pass (default 13).
+
+    Returns:
+        Series of TSI values in the range (-100, +100).
+
+    Raises:
+        ValueError: If ``slow < 1`` or ``fast < 1``.
+    """
+    _validate_period(slow, "TSI slow")
+    _validate_period(fast, "TSI fast")
+
+    delta = series.diff(n=1)
+    abs_delta = delta.abs()
+
+    double_smooth = ema(ema(delta, slow), fast)
+    double_smooth_abs = ema(ema(abs_delta, slow), fast)
+
+    # fill_nan handles the edge case where abs momentum is zero throughout.
+    return (100.0 * double_smooth / double_smooth_abs).fill_nan(0.0).alias(f"tsi_{slow}_{fast}")
+
+
+# ---------------------------------------------------------------------------
+# Ultimate Oscillator
+# ---------------------------------------------------------------------------
+
+
+def ultimate_oscillator(
+    ohlc: pl.DataFrame,
+    period1: int = 7,
+    period2: int = 14,
+    period3: int = 28,
+) -> pl.Series:
+    """Ultimate Oscillator — weighted blend of three time-frame oscillators.
+
+    Combines buying pressure and true range over three different periods
+    to reduce false signals from any single time frame.  Values above 70
+    indicate overbought; below 30 indicate oversold.
+
+    Algorithm (Larry Williams, 1976):
+        buying_pressure = close − min(low, prev_close)
+        true_range      = max(high, prev_close) − min(low, prev_close)
+        avg_n = Σ(BP, n) / Σ(TR, n)
+        UO = 100 × (4 × avg1 + 2 × avg2 + avg3) / 7
+
+    Args:
+        ohlc: DataFrame with columns ``high``, ``low``, ``close``.
+        period1: Shortest lookback period (default 7).
+        period2: Medium lookback period (default 14).
+        period3: Longest lookback period (default 28).
+
+    Returns:
+        Series of Ultimate Oscillator values in [0, 100].
+
+    Raises:
+        ValueError: If any period is less than 1.
+    """
+    _validate_period(period1, "Ultimate Oscillator period1")
+    _validate_period(period2, "Ultimate Oscillator period2")
+    _validate_period(period3, "Ultimate Oscillator period3")
+
+    high = ohlc["high"]
+    low = ohlc["low"]
+    close = ohlc["close"]
+    prev_close = close.shift(1)
+
+    # Buying pressure: how far close moved above the effective low.
+    true_low = pl.select(pl.min_horizontal(low, prev_close)).to_series()
+    true_high = pl.select(pl.max_horizontal(high, prev_close)).to_series()
+
+    buying_pressure = close - true_low
+    true_range_vals = true_high - true_low
+
+    def _avg(period: int) -> pl.Series:
+        """Rolling BP/TR ratio for a given period."""
+        bp_sum = buying_pressure.rolling_sum(window_size=period, min_samples=period)
+        tr_sum = true_range_vals.rolling_sum(window_size=period, min_samples=period)
+        return (bp_sum / tr_sum).fill_nan(0.5)
+
+    avg1 = _avg(period1)
+    avg2 = _avg(period2)
+    avg3 = _avg(period3)
+
+    return (100.0 * (4.0 * avg1 + 2.0 * avg2 + avg3) / 7.0).alias(
+        f"uo_{period1}_{period2}_{period3}"
+    )

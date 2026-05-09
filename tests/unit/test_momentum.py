@@ -2,23 +2,56 @@
 
 from __future__ import annotations
 
-import pytest
 import polars as pl
+import pytest
 
-from takit.momentum import rsi, macd, stochastic, williams_r, cci, roc
-
+from takit.momentum import (
+    cci,
+    cmf,
+    macd,
+    mfi,
+    roc,
+    rsi,
+    stochastic,
+    tsi,
+    ultimate_oscillator,
+    williams_r,
+)
 
 # A longer series so Wilder-based indicators have enough warm-up bars.
-CLOSE = pl.Series("close", [
-    44.34, 44.09, 44.15, 43.61, 44.33, 44.83, 45.10, 45.15, 43.61, 44.33,
-    44.83, 45.10, 45.15, 45.98, 45.77, 45.54, 45.41, 44.83, 45.10, 45.15,
-])
-OHLC = pl.DataFrame({
-    "open":  [44.0] * 20,
-    "high":  [v + 0.5 for v in CLOSE.to_list()],
-    "low":   [v - 0.5 for v in CLOSE.to_list()],
-    "close": CLOSE.to_list(),
-})
+CLOSE = pl.Series(
+    "close",
+    [
+        44.34,
+        44.09,
+        44.15,
+        43.61,
+        44.33,
+        44.83,
+        45.10,
+        45.15,
+        43.61,
+        44.33,
+        44.83,
+        45.10,
+        45.15,
+        45.98,
+        45.77,
+        45.54,
+        45.41,
+        44.83,
+        45.10,
+        45.15,
+    ],
+)
+OHLC = pl.DataFrame(
+    {
+        "open": [44.0] * 20,
+        "high": [v + 0.5 for v in CLOSE.to_list()],
+        "low": [v - 0.5 for v in CLOSE.to_list()],
+        "close": CLOSE.to_list(),
+    }
+)
 
 
 class TestRSI:
@@ -64,6 +97,7 @@ class TestMACD:
             result["macd_line"].to_list(),
             result["macd_signal"].to_list(),
             result["macd_histogram"].to_list(),
+            strict=True,
         ):
             if line is not None and sig is not None and hist is not None:
                 assert hist == pytest.approx(line - sig, abs=1e-9)
@@ -128,3 +162,98 @@ class TestROC:
         result = roc(CLOSE, 5)
         expected = 100.0 * (CLOSE[5] - CLOSE[0]) / CLOSE[0]
         assert result[5] == pytest.approx(expected)
+
+
+# OHLCV fixture shared across MFI and CMF tests.
+OHLCV = pl.DataFrame(
+    {
+        "high": [v + 0.5 for v in CLOSE.to_list()],
+        "low": [v - 0.5 for v in CLOSE.to_list()],
+        "close": CLOSE.to_list(),
+        "volume": [1000.0 + i * 10 for i in range(20)],
+    }
+)
+
+
+class TestMFI:
+    def test_output_length_matches_input(self) -> None:
+        assert len(mfi(OHLCV, 5)) == len(OHLCV)
+
+    def test_warm_up_is_null(self) -> None:
+        result = mfi(OHLCV, 5)
+        assert result[0] is None
+
+    def test_values_in_range(self) -> None:
+        result = mfi(OHLCV, 5)
+        for val in result.drop_nulls().to_list():
+            assert 0.0 <= val <= 100.0
+
+    def test_alias_contains_period(self) -> None:
+        assert mfi(OHLCV, 5).name == "mfi_5"
+
+    def test_invalid_period_raises(self) -> None:
+        with pytest.raises(ValueError):
+            mfi(OHLCV, 1)
+
+
+class TestCMF:
+    def test_output_length_matches_input(self) -> None:
+        assert len(cmf(OHLCV, 5)) == len(OHLCV)
+
+    def test_warm_up_is_null(self) -> None:
+        result = cmf(OHLCV, 5)
+        assert result[0] is None
+
+    def test_values_in_valid_range(self) -> None:
+        result = cmf(OHLCV, 5)
+        for val in result.drop_nulls().to_list():
+            assert -1.0 <= val <= 1.0
+
+    def test_alias_contains_period(self) -> None:
+        assert cmf(OHLCV, 5).name == "cmf_5"
+
+    def test_invalid_period_raises(self) -> None:
+        with pytest.raises(ValueError):
+            cmf(OHLCV, 0)
+
+
+class TestTSI:
+    def test_output_length_matches_input(self) -> None:
+        assert len(tsi(CLOSE, 5, 3)) == len(CLOSE)
+
+    def test_warm_up_is_null(self) -> None:
+        result = tsi(CLOSE, 5, 3)
+        assert result[0] is None
+
+    def test_values_in_range(self) -> None:
+        result = tsi(CLOSE, 5, 3)
+        for val in result.drop_nulls().to_list():
+            assert -100.0 <= val <= 100.0
+
+    def test_alias_contains_periods(self) -> None:
+        assert tsi(CLOSE, 5, 3).name == "tsi_5_3"
+
+    def test_invalid_slow_raises(self) -> None:
+        with pytest.raises(ValueError):
+            tsi(CLOSE, 0, 3)
+
+
+class TestUltimateOscillator:
+    def test_output_length_matches_input(self) -> None:
+        assert len(ultimate_oscillator(OHLC, 3, 7, 14)) == len(OHLC)
+
+    def test_warm_up_is_null(self) -> None:
+        result = ultimate_oscillator(OHLC, 3, 7, 14)
+        assert result[0] is None
+
+    def test_values_in_range(self) -> None:
+        result = ultimate_oscillator(OHLC, 3, 7, 14)
+        for val in result.drop_nulls().to_list():
+            assert 0.0 <= val <= 100.0
+
+    def test_alias_contains_periods(self) -> None:
+        assert ultimate_oscillator(OHLC, 3, 7, 14).name == "uo_3_7_14"
+
+    def test_invalid_period_raises(self) -> None:
+        with pytest.raises(ValueError):
+            ultimate_oscillator(OHLC, 0, 7, 14)
