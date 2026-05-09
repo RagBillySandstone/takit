@@ -245,16 +245,17 @@ def cci(ohlc: pl.DataFrame, period: int = 20) -> pl.Series:
 
     tp_sma = tp.rolling_mean(window_size=period, min_samples=period)
 
-    # Mean absolute deviation computed via a rolling map.
-    # For each window, MAD = mean(|tp_i − mean(tp)|).
+    # rolling_map invokes a Python callback per window — no vectorised MAD
+    # expression exists in Polars. Accepted performance trade-off for correctness.
     mad = tp.rolling_map(
         function=lambda s: (s - s.mean()).abs().mean(),
         window_size=period,
         min_samples=period,
     )
 
-    # Protect against a perfectly flat window where MAD == 0.
-    result = (tp - tp_sma) / (0.015 * mad)
+    # Perfectly flat windows produce MAD = 0 → 0/0 = NaN.  CCI is
+    # conventionally 0 in a directionless market.
+    result = ((tp - tp_sma) / (0.015 * mad)).fill_nan(0.0)
     return result.alias(f"cci_{period}")
 
 
@@ -334,7 +335,7 @@ def mfi(ohlc_vol: pl.DataFrame, period: int = 14) -> pl.Series:
         pl.select(pl.when(tp > tp_prev).then(money_flow).otherwise(0.0)).to_series().fill_null(0.0)
     )
     neg_mf = (
-        pl.select(pl.when(tp <= tp_prev).then(money_flow).otherwise(0.0)).to_series().fill_null(0.0)
+        pl.select(pl.when(tp < tp_prev).then(money_flow).otherwise(0.0)).to_series().fill_null(0.0)
     )
 
     pos_sum = pos_mf.rolling_sum(window_size=period, min_samples=period)
