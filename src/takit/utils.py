@@ -11,6 +11,8 @@ simple_returns  Bar-to-bar simple returns: (price[t] - price[t-1]) / price[t-1]
 
 from __future__ import annotations
 
+import math
+
 import polars as pl
 
 
@@ -78,7 +80,7 @@ def log_returns(series: pl.Series) -> pl.Series:
     Returns:
         Series of log return values.
     """
-    return (series / series.shift(1)).log(base=2.718281828459045).alias("log_returns")
+    return (series / series.shift(1)).log(base=math.e).alias("log_returns")
 
 
 def simple_returns(series: pl.Series) -> pl.Series:
