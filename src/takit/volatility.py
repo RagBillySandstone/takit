@@ -7,13 +7,18 @@ functions accept a ``pl.Series``.
 
 Functions
 ---------
-true_range      Single-bar True Range (prerequisite for ATR)
-atr             Average True Range (Wilder smoothing, default period 14)
-bollinger_bands Bollinger Bands: middle, upper, lower, %B, bandwidth
-keltner_channels Keltner Channels: middle (EMA), upper, lower
+true_range           Single-bar True Range (prerequisite for ATR)
+atr                  Average True Range (Wilder smoothing, default period 14)
+bollinger_bands      Bollinger Bands: middle, upper, lower, %B, bandwidth
+keltner_channels     Keltner Channels: middle (EMA), upper, lower
+chaikin_volatility   Rate of change of EMA(H-L range)
+historical_volatility Rolling annualised standard deviation of log returns
+ulcer_index          Drawdown-based volatility measure
 """
 
 from __future__ import annotations
+
+import math
 
 import polars as pl
 
@@ -184,3 +189,129 @@ def keltner_channels(
     lower = (middle - multiplier * atr_values).alias("kc_lower")
 
     return pl.DataFrame({"kc_middle": middle, "kc_upper": upper, "kc_lower": lower})
+
+
+# ---------------------------------------------------------------------------
+# Chaikin Volatility
+# ---------------------------------------------------------------------------
+
+
+def chaikin_volatility(
+    ohlc: pl.DataFrame,
+    ema_period: int = 10,
+    roc_period: int = 10,
+) -> pl.Series:
+    """Chaikin Volatility — rate of change of the EMA of the high-low range.
+
+    Measures the rate at which the smoothed trading range expands or contracts.
+    Rising values indicate increasing volatility; falling values suggest
+    diminishing volatility and potential consolidation.
+
+        ema_range = EMA(high − low, ema_period)
+        CV        = 100 × (ema_range[t] − ema_range[t − roc_period]) / ema_range[t − roc_period]
+
+    Args:
+        ohlc: DataFrame with columns ``high`` and ``low``.
+        ema_period: EMA smoothing period for the H-L range (default 10).
+        roc_period: Look-back for the rate-of-change calculation (default 10).
+
+    Returns:
+        Series of Chaikin Volatility values (percentage).
+
+    Raises:
+        ValueError: If ``ema_period < 1`` or ``roc_period < 1``.
+    """
+    _validate_period(ema_period, "Chaikin Volatility EMA")
+    _validate_period(roc_period, "Chaikin Volatility ROC")
+
+    hl_ema = ema(ohlc["high"] - ohlc["low"], ema_period)
+    past_ema = hl_ema.shift(roc_period)
+
+    return (100.0 * (hl_ema - past_ema) / past_ema).alias(f"chaikin_vol_{ema_period}_{roc_period}")
+
+
+# ---------------------------------------------------------------------------
+# Historical Volatility
+# ---------------------------------------------------------------------------
+
+
+def historical_volatility(
+    series: pl.Series,
+    period: int = 20,
+    annualise: bool = True,
+    trading_days: int = 252,
+) -> pl.Series:
+    """Historical Volatility — rolling annualised standard deviation of log returns.
+
+    Measures the realised volatility of a price series over a rolling window.
+    The result is expressed as an annualised percentage when ``annualise=True``.
+
+        log_return[t] = ln(price[t] / price[t-1])
+        HV            = std(log_return, period) × √trading_days   [if annualise]
+
+    Args:
+        series: Close price series (or any price series).
+        period: Rolling window length (default 20).
+        annualise: If ``True``, scale by ``√trading_days`` (default ``True``).
+        trading_days: Annualisation factor (default 252 for equities; use 365
+                      for crypto or 260 for FX).
+
+    Returns:
+        Series of Historical Volatility values.  Annualised values are
+        typically in the range [0, 2] (0%–200%).
+
+    Raises:
+        ValueError: If ``period < 2``.
+    """
+    _validate_period(period, "Historical Volatility", min_period=2)
+
+    log_ret = (series / series.shift(1)).log(base=math.e)
+    hv = log_ret.rolling_std(window_size=period, min_samples=period)
+
+    if annualise:
+        hv = hv * math.sqrt(trading_days)
+
+    return hv.alias(f"hv_{period}")
+
+
+# ---------------------------------------------------------------------------
+# Ulcer Index
+# ---------------------------------------------------------------------------
+
+
+def ulcer_index(series: pl.Series, period: int = 14) -> pl.Series:
+    """Ulcer Index — drawdown-based volatility measure.
+
+    Unlike standard deviation, the Ulcer Index only penalises downside
+    moves (drawdowns from the rolling maximum).  It is useful for
+    risk-adjusted metrics such as the Ulcer Performance Index (UPI).
+
+        rolling_max[t] = max(price, period)
+        pct_drawdown   = 100 × (price − rolling_max) / rolling_max
+        UI             = √(mean(pct_drawdown², period))
+
+    Low UI values indicate smooth, upward price action; high values
+    indicate deep or prolonged drawdowns.
+
+    Args:
+        series: Close price series.
+        period: Lookback window for both rolling max and the squaring average
+                (default 14).
+
+    Returns:
+        Series of Ulcer Index values (non-negative).
+
+    Raises:
+        ValueError: If ``period < 1``.
+    """
+    _validate_period(period, "Ulcer Index")
+
+    rolling_max = series.rolling_max(window_size=period, min_samples=period)
+
+    # Drawdown is zero or negative; squaring removes the sign.
+    pct_drawdown = 100.0 * (series - rolling_max) / rolling_max
+    squared_drawdown = pct_drawdown**2
+
+    return (squared_drawdown.rolling_mean(window_size=period, min_samples=period) ** 0.5).alias(
+        f"ulcer_{period}"
+    )
