@@ -196,8 +196,8 @@ def supertrend(
             continue
 
         hl2 = (high[idx] + low[idx]) / 2.0
-        basic_upper = hl2 + multiplier * atr_vals[idx]  # type: ignore[operator]
-        basic_lower = hl2 - multiplier * atr_vals[idx]  # type: ignore[operator]
+        basic_upper = hl2 + multiplier * atr_vals[idx]
+        basic_lower = hl2 - multiplier * atr_vals[idx]
 
         if idx == period:
             # First bar with a valid ATR — initialise both bands.
