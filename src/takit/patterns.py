@@ -142,16 +142,9 @@ def is_pin_bar_bullish(
     candle_range = _range(ohlc)
     body = _body(ohlc)
 
-    # Lower wick = min(open, close) - low.
-    lower_wick = (
-        pl.Series(
-            [
-                min(o, c)
-                for o, c in zip(ohlc["open"].to_list(), ohlc["close"].to_list(), strict=True)
-            ]
-        )
-        - ohlc["low"]
-    )
+    # Lower wick = min(open, close) - low; min_horizontal avoids a Python loop.
+    # pl.select() materialises the Expr to a Series so arithmetic is possible.
+    lower_wick = pl.select(pl.min_horizontal(ohlc["open"], ohlc["close"])).to_series() - ohlc["low"]
 
     # Avoid division by zero on doji-like bars with zero range.
     safe_range = candle_range.replace(0.0, float("nan"))
@@ -188,9 +181,9 @@ def is_pin_bar_bearish(
     candle_range = _range(ohlc)
     body = _body(ohlc)
 
-    # Upper wick = high - max(open, close).
-    upper_wick = ohlc["high"] - pl.Series(
-        [max(o, c) for o, c in zip(ohlc["open"].to_list(), ohlc["close"].to_list(), strict=True)]
+    # Upper wick = high - max(open, close); max_horizontal avoids a Python loop.
+    upper_wick = (
+        ohlc["high"] - pl.select(pl.max_horizontal(ohlc["open"], ohlc["close"])).to_series()
     )
 
     safe_range = candle_range.replace(0.0, float("nan"))
