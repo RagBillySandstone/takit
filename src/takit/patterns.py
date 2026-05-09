@@ -54,6 +54,30 @@ def _is_bearish(ohlc: pl.DataFrame) -> pl.Series:
     return ohlc["close"] < ohlc["open"]
 
 
+def _big_body(
+    open_: pl.Series,
+    close: pl.Series,
+    high: pl.Series,
+    low: pl.Series,
+    body_ratio: float,
+) -> pl.Series:
+    """True where body/range >= body_ratio (substantial candle body).
+
+    Args:
+        open_: Open price series (possibly shifted).
+        close: Close price series (possibly shifted).
+        high: High price series (possibly shifted).
+        low: Low price series (possibly shifted).
+        body_ratio: Minimum body-to-range ratio.
+
+    Returns:
+        Boolean Series; null on zero-range bars (treated as False downstream).
+    """
+    body = (close - open_).abs()
+    safe_range = (high - low).replace(0.0, float("nan"))
+    return body / safe_range >= body_ratio
+
+
 # ---------------------------------------------------------------------------
 # Engulfing patterns
 # ---------------------------------------------------------------------------
@@ -309,17 +333,9 @@ def is_three_white_soldiers(
     open_in_body_1 = (open_1 >= open_2) & (open_1 <= close_2)
 
     # Each candle must have a substantial body — avoids counting doji runs.
-    body_0 = (close - open_).abs()
-    safe_range_0 = (high - low).replace(0.0, float("nan"))
-    big_0 = body_0 / safe_range_0 >= body_ratio
-
-    body_1 = (close_1 - open_1).abs()
-    safe_range_1 = (high_1 - low_1).replace(0.0, float("nan"))
-    big_1 = body_1 / safe_range_1 >= body_ratio
-
-    body_2 = (close_2 - open_2).abs()
-    safe_range_2 = (high_2 - low_2).replace(0.0, float("nan"))
-    big_2 = body_2 / safe_range_2 >= body_ratio
+    big_0 = _big_body(open_, close, high, low, body_ratio)
+    big_1 = _big_body(open_1, close_1, high_1, low_1, body_ratio)
+    big_2 = _big_body(open_2, close_2, high_2, low_2, body_ratio)
 
     result = (
         bull_0
@@ -386,17 +402,10 @@ def is_three_black_crows(
     open_in_body_0 = (open_ >= close_1) & (open_ <= open_1)
     open_in_body_1 = (open_1 >= close_2) & (open_1 <= open_2)
 
-    body_0 = (open_ - close).abs()
-    safe_range_0 = (high - low).replace(0.0, float("nan"))
-    big_0 = body_0 / safe_range_0 >= body_ratio
-
-    body_1 = (open_1 - close_1).abs()
-    safe_range_1 = (high_1 - low_1).replace(0.0, float("nan"))
-    big_1 = body_1 / safe_range_1 >= body_ratio
-
-    body_2 = (open_2 - close_2).abs()
-    safe_range_2 = (high_2 - low_2).replace(0.0, float("nan"))
-    big_2 = body_2 / safe_range_2 >= body_ratio
+    # Each candle must have a substantial body — avoids counting doji runs.
+    big_0 = _big_body(open_, close, high, low, body_ratio)
+    big_1 = _big_body(open_1, close_1, high_1, low_1, body_ratio)
+    big_2 = _big_body(open_2, close_2, high_2, low_2, body_ratio)
 
     result = (
         bear_0
