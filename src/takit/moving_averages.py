@@ -7,12 +7,15 @@ rather than zero, preserving null-propagation semantics in Polars.
 
 Functions
 ---------
-sma             Simple Moving Average
-ema             Exponential Moving Average  (α = 2 / (n + 1))
-wma             Weighted Moving Average     (linearly weighted)
-wilder_smooth   Wilder's Smoothing / RMA    (α = 1 / n)
-dema            Double EMA                  (2·EMA - EMA(EMA))
-tema            Triple EMA                  (3·EMA - 3·EMA(EMA) + EMA(EMA(EMA)))
+sma               Simple Moving Average
+ema               Exponential Moving Average  (α = 2 / (n + 1))
+wma               Weighted Moving Average     (linearly weighted)
+wilder_smooth     Wilder's Smoothing / RMA    (α = 1 / n)
+dema              Double EMA                  (2·EMA - EMA(EMA))
+tema              Triple EMA                  (3·EMA - 3·EMA(EMA) + EMA(EMA(EMA)))
+hma               Hull Moving Average         (WMA of 2·WMA(n/2) - WMA(n))
+vwma              Volume-Weighted Moving Average
+mcginley_dynamic  McGinley Dynamic            (self-adjusting, tracks price closely)
 """
 
 from __future__ import annotations
@@ -230,3 +233,135 @@ def tema(series: pl.Series, period: int) -> pl.Series:
     ema2 = ema(ema1, period)
     ema3 = ema(ema2, period)
     return (3.0 * ema1 - 3.0 * ema2 + ema3).alias(f"tema_{period}")
+
+
+# ---------------------------------------------------------------------------
+# HMA
+# ---------------------------------------------------------------------------
+
+
+def hma(series: pl.Series, period: int) -> pl.Series:
+    """Hull Moving Average — reduces lag while remaining smooth.
+
+    HMA applies a WMA over a derived series that halves conventional lag:
+
+        raw      = 2 · WMA(series, n/2) − WMA(series, n)
+        HMA(n)   = WMA(raw, √n)
+
+    The ``n/2`` half-period uses integer division; the smoothing window
+    uses ``round(√n)``.  The warm-up is ``(period - 1) + (round(√period) - 1)``
+    bars, after which both underlying WMAs and the final WMA are defined.
+
+    Args:
+        series: Input price series.
+        period: Primary lookback window.
+
+    Returns:
+        Series of HMA values.
+
+    Raises:
+        ValueError: If ``period < 2`` (need at least two bars for a half-period).
+    """
+    _validate_period(period, "HMA", min_period=2)
+
+    half_period = period // 2
+    sqrt_period = round(period**0.5)
+
+    # The intermediate series amplifies the short-term WMA to reduce lag.
+    raw = 2.0 * wma(series, half_period) - wma(series, period)
+
+    return wma(raw, sqrt_period).alias(f"hma_{period}")
+
+
+# ---------------------------------------------------------------------------
+# VWMA
+# ---------------------------------------------------------------------------
+
+
+def vwma(price: pl.Series, volume: pl.Series, period: int) -> pl.Series:
+    """Volume-Weighted Moving Average.
+
+    Each bar within the window is weighted by its volume rather than by
+    its position (as in WMA) or equally (as in SMA).  VWMA tracks price
+    more closely during high-volume bars and gives less weight to
+    low-volume noise.
+
+        VWMA(n) = Σ(price[i] × volume[i]) / Σ(volume[i])   over the last n bars
+
+    The first ``period - 1`` values are ``null``.
+
+    Args:
+        price: Price series (e.g. close).
+        volume: Volume series aligned bar-for-bar with *price*.
+        period: Lookback window.
+
+    Returns:
+        Series of VWMA values.
+
+    Raises:
+        ValueError: If ``period < 1``.
+    """
+    _validate_period(period, "VWMA")
+
+    pv_sum = (price * volume.cast(pl.Float64)).rolling_sum(window_size=period, min_samples=period)
+    vol_sum = volume.cast(pl.Float64).rolling_sum(window_size=period, min_samples=period)
+
+    # fill_nan handles the edge case of a window with zero total volume.
+    return (pv_sum / vol_sum).fill_nan(None).alias(f"vwma_{period}")
+
+
+# ---------------------------------------------------------------------------
+# McGinley Dynamic
+# ---------------------------------------------------------------------------
+
+
+def mcginley_dynamic(series: pl.Series, period: int) -> pl.Series:
+    """McGinley Dynamic — self-adjusting moving average.
+
+    The McGinley Dynamic adapts its speed to market velocity so that it
+    stays closer to price during fast moves and is smoother during slow
+    ones.  Unlike EMA or WMA it does not require the trader to choose a
+    period that matches the current market rhythm — the formula
+    self-corrects:
+
+        MD[t] = MD[t-1] + (price - MD[t-1]) / (N × (price / MD[t-1])⁴)
+
+    The indicator is seeded with the SMA of the first *period* bars.
+    Values before the seed point are ``null``.
+
+    Args:
+        series: Input price series.
+        period: Nominal period (controls the denominator constant N).
+
+    Returns:
+        Series of McGinley Dynamic values.
+
+    Raises:
+        ValueError: If ``period < 1``.
+    """
+    _validate_period(period, "McGinley Dynamic")
+
+    raw_values: list[float | None] = series.to_list()
+    output: list[float | None] = [None] * len(raw_values)
+
+    # Seed with the SMA of the first period bars; skip if any input is null.
+    seed_window = [v for v in raw_values[:period] if v is not None]
+    if len(seed_window) < period:
+        # Not enough non-null data to seed — return all-null series.
+        return pl.Series(f"mcginley_{period}", output, dtype=pl.Float64)
+
+    md = sum(seed_window) / period
+    output[period - 1] = md
+
+    for idx in range(period, len(raw_values)):
+        price = raw_values[idx]
+        if price is None or md == 0.0:
+            # Propagate null on missing data or degenerate seed.
+            output[idx] = None
+            continue
+        # The (price/MD)^4 term makes the denominator larger (slower) when
+        # price is far above MD and smaller (faster) when price is far below.
+        md = md + (price - md) / (period * (price / md) ** 4)
+        output[idx] = md
+
+    return pl.Series(f"mcginley_{period}", output, dtype=pl.Float64)

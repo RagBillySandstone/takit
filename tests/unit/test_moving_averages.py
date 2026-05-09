@@ -2,11 +2,20 @@
 
 from __future__ import annotations
 
-import pytest
 import polars as pl
+import pytest
 
-from takit.moving_averages import sma, ema, wma, wilder_smooth, dema, tema
-
+from takit.moving_averages import (
+    dema,
+    ema,
+    hma,
+    mcginley_dynamic,
+    sma,
+    tema,
+    vwma,
+    wilder_smooth,
+    wma,
+)
 
 PRICES = pl.Series("close", [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0])
 
@@ -28,7 +37,7 @@ class TestSMA:
     def test_full_series(self) -> None:
         result = sma(PRICES, 3)
         expected = [None, None, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0]
-        for got, exp in zip(result.to_list(), expected):
+        for got, exp in zip(result.to_list(), expected, strict=True):
             if exp is None:
                 assert got is None
             else:
@@ -92,7 +101,7 @@ class TestWilderSmooth:
         # Wilder smooth with period=1 should equal alpha=1.0, which makes each
         # output equal to the input (ewm with α=1 gives the current value).
         result = wilder_smooth(PRICES, 1)
-        for got, exp in zip(result.to_list(), PRICES.to_list()):
+        for got, exp in zip(result.to_list(), PRICES.to_list(), strict=True):
             assert got == pytest.approx(exp)
 
 
@@ -119,3 +128,79 @@ class TestTEMA:
         tema_nulls = sum(1 for v in result_tema.to_list() if v is None)
         dema_nulls = sum(1 for v in result_dema.to_list() if v is None)
         assert tema_nulls >= dema_nulls
+
+
+class TestHMA:
+    def test_output_length_matches_input(self) -> None:
+        assert len(hma(PRICES, 4)) == len(PRICES)
+
+    def test_warm_up_is_null(self) -> None:
+        # period=4 → half=2, sqrt=2; warm-up = (2-1) + (2-1) = 2 bars
+        result = hma(PRICES, 4)
+        assert result[0] is None
+
+    def test_valid_values_are_not_null(self) -> None:
+        result = hma(PRICES, 4)
+        valid = [v for v in result.to_list() if v is not None]
+        assert len(valid) > 0
+
+    def test_invalid_period_raises(self) -> None:
+        with pytest.raises(ValueError):
+            hma(PRICES, 1)
+
+    def test_alias_contains_period(self) -> None:
+        assert hma(PRICES, 4).name == "hma_4"
+
+
+class TestVWMA:
+    def test_output_length_matches_input(self) -> None:
+        volume = pl.Series("vol", [100.0] * 10)
+        assert len(vwma(PRICES, volume, 3)) == len(PRICES)
+
+    def test_warm_up_is_null(self) -> None:
+        volume = pl.Series("vol", [100.0] * 10)
+        result = vwma(PRICES, volume, 3)
+        assert result[0] is None
+        assert result[1] is None
+
+    def test_equal_volume_matches_sma(self) -> None:
+        # When all bars have equal volume, VWMA == SMA.
+        volume = pl.Series("vol", [50.0] * 10)
+        result_vwma = vwma(PRICES, volume, 3)
+        result_sma = sma(PRICES, 3)
+        for got, exp in zip(
+            result_vwma.drop_nulls().to_list(), result_sma.drop_nulls().to_list(), strict=True
+        ):
+            assert got == pytest.approx(exp)
+
+    def test_high_volume_bar_pulls_average(self) -> None:
+        # Price: [1, 2, 100]; volume: [1, 1, 1000] → VWMA dominated by last bar.
+        price = pl.Series([1.0, 2.0, 100.0])
+        volume = pl.Series([1.0, 1.0, 1000.0])
+        result = vwma(price, volume, 3)
+        # VWMA = (1*1 + 2*1 + 100*1000) / (1 + 1 + 1000) ≈ 99.9
+        assert result[2] == pytest.approx((1 + 2 + 100_000) / 1002, rel=1e-6)
+
+
+class TestMcginleyDynamic:
+    def test_output_length_matches_input(self) -> None:
+        assert len(mcginley_dynamic(PRICES, 3)) == len(PRICES)
+
+    def test_warm_up_is_null(self) -> None:
+        result = mcginley_dynamic(PRICES, 3)
+        assert result[0] is None
+        assert result[1] is None
+
+    def test_seed_value_equals_sma(self) -> None:
+        # The first valid value (index period-1) is the SMA seed.
+        result = mcginley_dynamic(PRICES, 3)
+        expected_seed = (1.0 + 2.0 + 3.0) / 3.0
+        assert result[2] == pytest.approx(expected_seed)
+
+    def test_converges_on_flat_series(self) -> None:
+        # On a perfectly flat series the McGinley Dynamic stays constant.
+        flat = pl.Series([5.0] * 20)
+        result = mcginley_dynamic(flat, 5)
+        valid = [v for v in result.to_list() if v is not None]
+        for value in valid:
+            assert value == pytest.approx(5.0, rel=1e-9)
