@@ -42,11 +42,11 @@
 ## API / quality improvements
 - [x] **Vectorise pin bar wicks** — replace Python `zip` loop in `is_pin_bar_bullish/bearish` with `pl.min_horizontal` / `pl.max_horizontal` for speed on large datasets.
 - [x] **`crossover` / `crossunder` with tolerance** — add optional `atol` parameter to handle floating-point equality at cross.
-- [ ] **Null-prefix consistency audit** — verify every indicator returns exactly `period - 1` leading nulls (no accidental zeroes or extra nulls).
+- [x] **Null-prefix consistency audit** — verify every indicator returns exactly `period - 1` leading nulls (no accidental zeroes or extra nulls).
 
 ---
 
 ## Packaging
 - [ ] **PyPI release** — bump to `0.1.0`, write `CHANGELOG.md`, publish to PyPI.
-- [ ] **Benchmark suite** — `tests/benchmark/` using `pytest-benchmark` to track performance on a 100k-bar series across all indicators.
-- [ ] **`py.typed` marker** — already present; verify downstream mypy usage works end-to-end.
+- [x] **Benchmark suite** — `tests/benchmark/` using `pytest-benchmark` to track performance on a 100k-bar series across all indicators.
+- [x] **`py.typed` marker** — already present; verify downstream mypy usage works end-to-end.
