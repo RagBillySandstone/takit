@@ -47,6 +47,6 @@
 ---
 
 ## Packaging
-- [ ] **PyPI release** — bump to `0.1.0`, write `CHANGELOG.md`, publish to PyPI.
+- [x] **PyPI release** — bump to `0.1.0`, write `CHANGELOG.md`, publish to PyPI.
 - [x] **Benchmark suite** — `tests/benchmark/` using `pytest-benchmark` to track performance on a 100k-bar series across all indicators.
 - [x] **`py.typed` marker** — already present; verify downstream mypy usage works end-to-end.

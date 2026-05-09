@@ -80,3 +80,10 @@ Initial public release of takit, a Polars-native technical analysis library.
 - `py.typed` marker included for downstream mypy compatibility
 - Full `--strict` mypy pass with no errors
 - 54-benchmark suite (`tests/benchmark/`) via `pytest-benchmark` on 100 000-bar series
+
+### Bug Fixes (included in initial release)
+- `is_doji` now returns `True` for zero-range bars (`high == low`) — previously returned `False`
+  due to NaN propagating through the boolean comparison
+- `mfi` now treats equal-TP bars as neutral; previously they were allocated to the negative
+  money-flow bucket, causing slightly understated MFI readings
+- `cci` now returns `0.0` for perfectly flat windows instead of propagating silent `NaN`
