@@ -16,6 +16,8 @@ tema              Triple EMA                  (3·EMA - 3·EMA(EMA) + EMA(EMA(EM
 hma               Hull Moving Average         (WMA of 2·WMA(n/2) - WMA(n))
 vwma              Volume-Weighted Moving Average
 mcginley_dynamic  McGinley Dynamic            (self-adjusting, tracks price closely)
+kama              Kaufman Adaptive Moving Average (ER-based adaptive smoothing)
+trix              Triple-smoothed EMA oscillator with signal line
 """
 
 from __future__ import annotations
@@ -349,3 +351,166 @@ def mcginley_dynamic(series: pl.Series, period: int) -> pl.Series:
         output[idx] = md
 
     return pl.Series(f"mcginley_{period}", output, dtype=pl.Float64)
+
+
+# ---------------------------------------------------------------------------
+# KAMA
+# ---------------------------------------------------------------------------
+
+
+def kama(
+    series: pl.Series,
+    period: int = 10,
+    fast_period: int = 2,
+    slow_period: int = 30,
+) -> pl.Series:
+    """Kaufman Adaptive Moving Average.
+
+    KAMA self-adjusts its smoothing speed based on the *Efficiency Ratio* (ER),
+    which compares net price movement (signal) against total path length (noise).
+    In trending markets the ER is high and KAMA tracks price quickly; in choppy
+    markets the ER is low and KAMA barely moves.
+
+    Algorithm:
+        abs_diffs[t]    = |price[t] − price[t-1]|
+        direction[t]    = |price[t] − price[t-period]|   (net move over period)
+        volatility[t]   = Σ abs_diffs over the last period bars  (total path)
+        ER[t]           = direction[t] / volatility[t]
+        fast_sc         = 2 / (fast_period + 1)
+        slow_sc         = 2 / (slow_period + 1)
+        SC[t]           = (ER[t] × (fast_sc − slow_sc) + slow_sc)²
+        KAMA[t]         = KAMA[t-1] + SC[t] × (price[t] − KAMA[t-1])
+
+    The indicator is seeded at bar ``period - 1`` with the raw price; the first
+    ``period - 1`` output values are ``null``.
+
+    Args:
+        series: Input price series (e.g., close).
+        period: Lookback window for the Efficiency Ratio (default 10).
+        fast_period: Fastest EMA period used in the smoothing constant (default 2).
+        slow_period: Slowest EMA period used in the smoothing constant (default 30).
+
+    Returns:
+        Series of KAMA values.  The first ``period - 1`` values are ``null``.
+
+    Raises:
+        ValueError: If any period is below its minimum or ``fast_period >= slow_period``.
+    """
+    _validate_period(period, "KAMA")
+    _validate_period(fast_period, "KAMA fast_period")
+    _validate_period(slow_period, "KAMA slow_period")
+    if fast_period >= slow_period:
+        raise ValueError(
+            f"KAMA fast_period ({fast_period}) must be less than slow_period ({slow_period})."
+        )
+
+    # Smoothing constants for the fastest and slowest EMA bounds.
+    fast_sc = 2.0 / (fast_period + 1)
+    slow_sc = 2.0 / (slow_period + 1)
+
+    raw: list[float | None] = series.to_list()
+    n = len(raw)
+    output: list[float | None] = [None] * n
+
+    # Pre-build absolute bar-to-bar differences; index 0 is a sentinel 0.0
+    # because bar 0 has no predecessor.
+    abs_diffs: list[float] = [0.0] + [
+        abs(raw[i] - raw[i - 1])  # type: ignore[operator]
+        if (raw[i] is not None and raw[i - 1] is not None)
+        else 0.0
+        for i in range(1, n)
+    ]
+
+    seed_idx = period - 1
+    if raw[seed_idx] is None:
+        return pl.Series(f"kama_{period}", output, dtype=pl.Float64)
+
+    kama_val: float = raw[seed_idx]  # type: ignore[assignment]
+    output[seed_idx] = kama_val
+
+    # Initialise the sliding-window sum with the period-1 diffs that precede
+    # the first computation bar (idx=period).  The loop then extends the window
+    # by one diff before computing and shrinks it by one diff after, keeping
+    # the window size constant at exactly period bars.
+    window_vol: float = sum(abs_diffs[1:period])
+
+    for idx in range(period, n):
+        price = raw[idx]
+
+        # Extend the window with the newest diff before computing or skipping.
+        window_vol += abs_diffs[idx]
+
+        if price is not None and raw[idx - period] is not None:
+            direction = abs(price - raw[idx - period])  # type: ignore[operator]
+            # ER = 0 when the market is perfectly choppy (no net movement).
+            er = direction / window_vol if window_vol != 0.0 else 0.0
+
+            # Squaring the SC compresses the range and ensures non-negative values.
+            sc = (er * (fast_sc - slow_sc) + slow_sc) ** 2
+
+            kama_val = kama_val + sc * (price - kama_val)
+            output[idx] = kama_val
+
+        # Evict the oldest diff so the window stays at exactly period bars.
+        window_vol -= abs_diffs[idx - period + 1]
+
+    return pl.Series(f"kama_{period}", output, dtype=pl.Float64)
+
+
+# ---------------------------------------------------------------------------
+# TRIX
+# ---------------------------------------------------------------------------
+
+
+def trix(
+    series: pl.Series,
+    period: int = 14,
+    signal: int = 9,
+) -> pl.DataFrame:
+    """TRIX — triple-smoothed EMA rate-of-change oscillator.
+
+    TRIX applies three successive EMA passes to filter out short cycles and
+    market noise, then computes the percentage rate of change of the result.
+    It oscillates around zero like MACD but is more resistant to whipsaws.
+    A cross of the TRIX line above the signal line is a buy signal.
+
+    Algorithm:
+        ema1      = EMA(series, period)
+        ema2      = EMA(ema1,   period)
+        ema3      = EMA(ema2,   period)
+        trix_line = 100 × (ema3[t] − ema3[t-1]) / ema3[t-1]
+        trix_signal    = EMA(trix_line, signal)
+        trix_histogram = trix_line − trix_signal
+
+    Null-prefix for ``trix_line``:      ``3 × (period - 1) + 1`` bars.
+    Null-prefix for ``trix_signal``:    ``3 × (period - 1) + signal`` bars.
+    Null-prefix for ``trix_histogram``: same as ``trix_signal``.
+
+    Args:
+        series: Input price series (e.g., close).
+        period: EMA period applied three times (default 14).
+        signal: EMA period for the signal line (default 9).
+
+    Returns:
+        DataFrame with columns ``trix_line``, ``trix_signal``, ``trix_histogram``.
+
+    Raises:
+        ValueError: If ``period < 1`` or ``signal < 1``.
+    """
+    _validate_period(period, "TRIX")
+    _validate_period(signal, "TRIX signal")
+
+    ema1 = ema(series, period)
+    ema2 = ema(ema1, period)
+    ema3 = ema(ema2, period)
+
+    # Percentage change of the triple-smoothed EMA; fill_nan converts any
+    # division-by-zero (flat or zero-valued ema3) to null.
+    trix_line = (100.0 * (ema3 - ema3.shift(1)) / ema3.shift(1)).fill_nan(None).alias("trix_line")
+
+    signal_line = ema(trix_line, signal).alias("trix_signal")
+    histogram = (trix_line - signal_line).alias("trix_histogram")
+
+    return pl.DataFrame(
+        {"trix_line": trix_line, "trix_signal": signal_line, "trix_histogram": histogram}
+    )
