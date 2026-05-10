@@ -43,12 +43,12 @@
 
 ### Moving averages
 - [ ] **ALMA** (`alma`) — Arnaud Legoux Moving Average; Gaussian-weighted, good at noise reduction.
-- [ ] **KAMA** (`kama`) — Kaufman Adaptive Moving Average; self-adjusts speed based on market noise. ⭐
+- [x] **KAMA** (`kama`) — Kaufman Adaptive Moving Average; self-adjusts speed based on market noise. ⭐
 - [ ] **ZLEMA** (`zlema`) — Zero Lag EMA; removes EMA lag via error correction.
 - [ ] **T3** (`t3`) — Tillson Triple EMA; smoother than TEMA, distinct algorithm.
 
 ### Momentum / oscillators
-- [ ] **StochRSI** (`stoch_rsi`) — Stochastic applied to RSI; very popular in crypto/algo trading. ⭐
+- [x] **StochRSI** (`stoch_rsi`) — Stochastic applied to RSI; very popular in crypto/algo trading. ⭐
 - [ ] **Aroon** (`aroon`) — Aroon Up/Down/Oscillator; measures time since highest high / lowest low.
 - [ ] **PPO** (`ppo`) — Percentage Price Oscillator; MACD normalised as a percentage.
 - [ ] **CMO** (`cmo`) — Chande Momentum Oscillator; RSI variant using positive/negative momentum ratio.
@@ -57,14 +57,14 @@
 - [ ] **Coppock Curve** (`coppock`) — long-term momentum oscillator.
 
 ### Trend
-- [ ] **Ichimoku Cloud** (`ichimoku`) — 5-component system (Tenkan, Kijun, Senkou A/B, Chikou); multi-output. ⭐
+- [x] **Ichimoku Cloud** (`ichimoku`) — 5-component system (Tenkan, Kijun, Senkou A/B, Chikou); multi-output. ⭐
 - [ ] **Linear Regression Slope** (`linreg_slope`) — slope of regression line over rolling window.
 - [ ] **Vortex Indicator** (`vortex`) — VI+ and VI− measure directional movement intensity.
-- [ ] **TRIX** (`trix`) — triple-smoothed EMA, 1-period ROC; great noise filter. ⭐
+- [x] **TRIX** (`trix`) — triple-smoothed EMA, 1-period ROC; great noise filter. ⭐
 - [ ] **Schaff Trend Cycle** (`stc`) — stochastic of MACD; faster cycle detection.
 
 ### Volatility
-- [ ] **Chandelier Exit** (`chandelier_exit`) — ATR-based trailing stop; widely used for position exits. ⭐
+- [x] **Chandelier Exit** (`chandelier_exit`) — ATR-based trailing stop; widely used for position exits. ⭐
 - [ ] **Mass Index** (`mass_index`) — detects reversals by measuring range expansion.
 - [ ] **NATR** (`natr`) — Normalised ATR; ATR as % of close, comparable across instruments.
 
