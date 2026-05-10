@@ -9,11 +9,13 @@ Functions
 ---------
 true_range           Single-bar True Range (prerequisite for ATR)
 atr                  Average True Range (Wilder smoothing, default period 14)
+natr                 Normalised ATR — ATR as a percentage of close
 bollinger_bands      Bollinger Bands: middle, upper, lower, %B, bandwidth
 keltner_channels     Keltner Channels: middle (EMA), upper, lower
 chaikin_volatility   Rate of change of EMA(H-L range)
 historical_volatility Rolling annualised standard deviation of log returns
 ulcer_index          Drawdown-based volatility measure
+chandelier_exit      ATR-based dynamic trailing-stop levels
 """
 
 from __future__ import annotations
@@ -91,6 +93,41 @@ def atr(ohlc: pl.DataFrame, period: int = 14) -> pl.Series:
     _validate_period(period, "ATR")
     tr = true_range(ohlc)
     return wilder_smooth(tr, period).alias(f"atr_{period}")
+
+
+# ---------------------------------------------------------------------------
+# NATR
+# ---------------------------------------------------------------------------
+
+
+def natr(ohlc: pl.DataFrame, period: int = 14) -> pl.Series:
+    """Normalised Average True Range — ATR expressed as a percentage of close.
+
+    NATR scales ATR by the current closing price, making volatility directly
+    comparable across instruments at different price levels.  A NATR of 2.0
+    means the average true range is 2% of the close.
+
+        NATR = 100 × ATR(period) / close
+
+    The first ``period − 1`` values are ``null`` (inherited from ATR).
+
+    Args:
+        ohlc: DataFrame with columns ``high``, ``low``, ``close``.
+        period: ATR lookback period (default 14).
+
+    Returns:
+        Series of NATR values (percentage, non-negative).
+
+    Raises:
+        ValueError: If ``period < 1``.
+    """
+    _validate_period(period, "NATR")
+
+    atr_values = atr(ohlc, period)
+    close = ohlc["close"]
+
+    # fill_nan guards against the theoretical zero-close edge case.
+    return (100.0 * atr_values / close).fill_nan(None).alias(f"natr_{period}")
 
 
 # ---------------------------------------------------------------------------
