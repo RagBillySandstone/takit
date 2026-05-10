@@ -194,6 +194,8 @@ and return a `pl.Series`.
 | `hma(series, period)` | Hull MA — reduces lag | `(period−1) + (√period−1)` |
 | `vwma(price, volume, period)` | Volume-Weighted MA | `period − 1` |
 | `mcginley_dynamic(series, period)` | Self-adjusting MA | `period − 1` |
+| `kama(series, period=10, fast_period=2, slow_period=30)` | Kaufman Adaptive MA | `period − 1` |
+| `trix(series, period=14, signal=9)` | Triple EMA oscillator + signal | `3·(period−1)+1` / `3·(period−1)+signal` |
 
 ```python
 close  = df["close"]
@@ -212,6 +214,27 @@ It runs `WMA(2·WMA(n/2) − WMA(n), √n)` and has a warm-up of
 **McGinley Dynamic** self-corrects its smoothing speed based on how fast price
 is moving relative to the current indicator value.  Seed is the SMA of the
 first `period` bars.
+
+**KAMA** uses the *Efficiency Ratio* — net price change divided by total path
+length — to adapt between a fast and slow EMA smoothing constant.  In a strong
+trend ER → 1 and KAMA tracks price closely; in chop ER → 0 and KAMA barely
+moves, filtering noise.
+
+```python
+kama20 = polarticks.kama(close, period=10, fast_period=2, slow_period=30)
+```
+
+**TRIX** triple-smoothes price with EMA then computes the 1-period percentage
+rate of change, returning a `pl.DataFrame` with `trix_line`, `trix_signal`,
+and `trix_histogram` — the same shape as `macd()`.  The three EMA passes filter
+out short cycles so TRIX is far less prone to whipsaws than raw ROC.
+
+```python
+tx = polarticks.trix(close, period=14, signal=9)
+# tx["trix_line"]      — triple-smoothed momentum
+# tx["trix_signal"]    — EMA of the TRIX line
+# tx["trix_histogram"] — line minus signal
+```
 
 ---
 
@@ -246,6 +269,20 @@ Returns `stoch_k` and `stoch_d`.  Both range from 0 to 100.
 ```python
 st = polarticks.stochastic(df)
 cross_up = polarticks.crossover(st["stoch_k"], st["stoch_d"])
+```
+
+#### `stoch_rsi(series, rsi_period=14, stoch_period=14, k_period=3, d_period=3)` → `pl.DataFrame`
+
+Stochastic oscillator applied to RSI values rather than price.  Generates
+overbought/oversold signals more frequently than raw RSI.  Returns
+`stoch_rsi_k` and `stoch_rsi_d`, both in [0, 100].
+
+Leading nulls: `rsi_period + stoch_period + k_period − 2` for `%K`;
+add `d_period − 1` more for `%D`.
+
+```python
+srsi = polarticks.stoch_rsi(df["close"])
+oversold = srsi["stoch_rsi_k"] < 20
 ```
 
 #### `williams_r(ohlc, period=14)` → `pl.Series`
@@ -342,6 +379,24 @@ Drawdown-based volatility: `√(mean(pct_drawdown², period))`.  Only penalises
 downside moves; useful for risk-adjusted metrics like the Ulcer Performance
 Index.  Leading nulls: `2 × (period − 1)` (rolling max then rolling mean).
 
+#### `chandelier_exit(ohlc, period=22, multiplier=3.0)` → `pl.DataFrame`
+
+ATR-based dynamic trailing stops for both long and short positions.
+
+| Column | Description |
+|---|---|
+| `ce_long_{period}` | `highest_high(period) − multiplier × ATR(period)` |
+| `ce_short_{period}` | `lowest_low(period) + multiplier × ATR(period)` |
+
+A close below the long exit (or above the short exit) signals a potential
+trend reversal.  Leading nulls: `period − 1`.
+
+```python
+ce = polarticks.chandelier_exit(df, period=22, multiplier=3.0)
+long_stop  = ce["ce_long_22"]
+short_stop = ce["ce_short_22"]
+```
+
 ---
 
 ### Trend
@@ -393,6 +448,32 @@ Parabolic SAR dot plot.  Returns `psar` (price level) and `psar_direction`
 ```python
 sar = polarticks.parabolic_sar(df)
 flip_to_bull = sar["psar_direction"].diff() == 2
+```
+
+#### `ichimoku(ohlc, tenkan_period=9, kijun_period=26, senkou_b_period=52, chikou_period=26)` → `pl.DataFrame`
+
+The Ichimoku Cloud system in a single call.  Returns five components:
+
+| Column | Formula | Leading nulls |
+|---|---|---|
+| `tenkan_sen` | `(HH(9) + LL(9)) / 2` | `tenkan_period − 1` |
+| `kijun_sen` | `(HH(26) + LL(26)) / 2` | `kijun_period − 1` |
+| `senkou_span_a` | `(tenkan + kijun) / 2` | `kijun_period − 1` |
+| `senkou_span_b` | `(HH(52) + LL(52)) / 2` | `senkou_b_period − 1` |
+| `chikou_span` | `close.shift(−chikou_period)` | 0 leading, `chikou_period` trailing |
+
+All components are returned at the current bar without any forward/backward
+shift.  To display the cloud `kijun_period` bars ahead (the standard chart
+convention), apply `.shift(kijun_period)` to the senkou columns.
+
+```python
+ichi = polarticks.ichimoku(df)
+
+# Bullish TK cross
+tk_cross = polarticks.crossover(ichi["tenkan_sen"], ichi["kijun_sen"])
+
+# Price vs cloud: check if close is above both span edges
+above_cloud = (df["close"] > ichi["senkou_span_a"]) & (df["close"] > ichi["senkou_span_b"])
 ```
 
 ---
@@ -560,7 +641,7 @@ Bar-to-bar simple (arithmetic) returns.  One leading null.
 ## Running tests
 
 ```bash
-uv run pytest tests/unit/       # 232 unit tests
+uv run pytest tests/unit/       # 325 unit tests
 uv run pytest tests/            # all tests (includes benchmarks — takes ~90 s)
 ```
 
