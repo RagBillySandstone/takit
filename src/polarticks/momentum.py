@@ -11,6 +11,7 @@ rsi                 Relative Strength Index (Wilder, default period 14)
 macd                MACD line, signal line, and histogram
 stochastic          Stochastic Oscillator (%K and %D)
 stoch_rsi           Stochastic applied to RSI (StochRSI %K and %D)
+ppo                 Percentage Price Oscillator (MACD normalised as %)
 williams_r          Williams %R
 cci                 Commodity Channel Index
 roc                 Rate of Change (percentage)
@@ -571,3 +572,59 @@ def stoch_rsi(
     d = sma(k, d_period).alias("stoch_rsi_d")
 
     return pl.DataFrame({"stoch_rsi_k": k, "stoch_rsi_d": d})
+
+
+# ---------------------------------------------------------------------------
+# PPO
+# ---------------------------------------------------------------------------
+
+
+def ppo(
+    series: pl.Series,
+    fast: int = 12,
+    slow: int = 26,
+    signal: int = 9,
+) -> pl.DataFrame:
+    """Percentage Price Oscillator — MACD normalised as a percentage of price.
+
+    PPO expresses the MACD line as a fraction of the slow EMA, making it
+    directly comparable across instruments with different price levels.
+    A value of +1.5 means the fast EMA is 1.5% above the slow EMA.
+
+    Algorithm:
+        ppo_line      = 100 × (EMA(fast) − EMA(slow)) / EMA(slow)
+        ppo_signal    = EMA(ppo_line, signal)
+        ppo_histogram = ppo_line − ppo_signal
+
+    Null-prefix:
+        ``ppo_line``      — ``slow − 1`` bars.
+        ``ppo_signal``    — ``(slow − 1) + (signal − 1)`` bars.
+        ``ppo_histogram`` — same as ``ppo_signal``.
+
+    Args:
+        series: Close price series.
+        fast: Fast EMA period (default 12).
+        slow: Slow EMA period (default 26).
+        signal: Signal line EMA period (default 9).
+
+    Returns:
+        DataFrame with columns ``ppo_line``, ``ppo_signal``, ``ppo_histogram``.
+
+    Raises:
+        ValueError: If ``fast >= slow``.
+    """
+    if fast >= slow:
+        raise ValueError(f"PPO fast period ({fast}) must be less than slow period ({slow}).")
+
+    fast_ema = ema(series, fast)
+    slow_ema = ema(series, slow)
+
+    # fill_nan handles the rare zero-slow-EMA edge case.
+    ppo_line = (100.0 * (fast_ema - slow_ema) / slow_ema).fill_nan(None).alias("ppo_line")
+
+    signal_line = ema(ppo_line, signal).alias("ppo_signal")
+    histogram = (ppo_line - signal_line).alias("ppo_histogram")
+
+    return pl.DataFrame(
+        {"ppo_line": ppo_line, "ppo_signal": signal_line, "ppo_histogram": histogram}
+    )
