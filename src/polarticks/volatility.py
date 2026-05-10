@@ -322,3 +322,58 @@ def ulcer_index(series: pl.Series, period: int = 14) -> pl.Series:
     return (squared_drawdown.rolling_mean(window_size=period, min_samples=period) ** 0.5).alias(
         f"ulcer_{period}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Chandelier Exit
+# ---------------------------------------------------------------------------
+
+
+def chandelier_exit(
+    ohlc: pl.DataFrame,
+    period: int = 22,
+    multiplier: float = 3.0,
+) -> pl.DataFrame:
+    """Chandelier Exit — ATR-based dynamic trailing-stop levels.
+
+    The Chandelier Exit defines two trailing-stop lines: one for long
+    positions and one for short positions.  When price falls below the long
+    exit (or rises above the short exit) it signals a potential trend
+    reversal.  Developed by Charles Le Beau.
+
+    Algorithm:
+        long_exit[t]  = highest_high(period)[t] − multiplier × ATR(period)[t]
+        short_exit[t] = lowest_low(period)[t]  + multiplier × ATR(period)[t]
+
+    The first ``period - 1`` values are ``null`` (ATR warm-up).
+
+    Args:
+        ohlc: DataFrame with columns ``high``, ``low``, ``close``.
+        period: Lookback window for the highest-high, lowest-low, and ATR
+            (default 22).
+        multiplier: ATR multiplier that controls how tight the stops are
+            (default 3.0).
+
+    Returns:
+        DataFrame with columns:
+            ``ce_long_{period}``  — long-position trailing stop level,
+            ``ce_short_{period}`` — short-position trailing stop level.
+
+    Raises:
+        ValueError: If ``period < 1``.
+    """
+    _validate_period(period, "Chandelier Exit")
+
+    highest_high = ohlc["high"].rolling_max(window_size=period, min_samples=period)
+    lowest_low = ohlc["low"].rolling_min(window_size=period, min_samples=period)
+    atr_values = atr(ohlc, period)
+
+    long_exit = highest_high - multiplier * atr_values
+    short_exit = lowest_low + multiplier * atr_values
+
+    return pl.DataFrame(
+        {
+            f"ce_long_{period}": long_exit,
+            f"ce_short_{period}": short_exit,
+        }
+    )
