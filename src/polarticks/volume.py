@@ -6,6 +6,7 @@ Functions
 vwap        Session-anchored Volume Weighted Average Price
 vwap_bands  VWAP with ±1σ / ±2σ standard-deviation bands
 obv         On-Balance Volume (running signed cumulative volume)
+ad_line     Accumulation/Distribution Line (volume-weighted cumulative flow)
 """
 
 from __future__ import annotations
@@ -249,3 +250,49 @@ def obv(ohlc_vol: pl.DataFrame) -> pl.Series:
 
     # Bar 0 has no prior close, so its signed volume is null → treat as zero.
     return signed_volume.fill_null(0.0).cum_sum().alias("obv")
+
+
+# ---------------------------------------------------------------------------
+# A/D Line
+# ---------------------------------------------------------------------------
+
+
+def ad_line(ohlc_vol: pl.DataFrame) -> pl.Series:
+    """Accumulation/Distribution Line — volume-weighted cumulative money flow.
+
+    The A/D Line accumulates volume scaled by the *Money Flow Multiplier*,
+    which measures where the close sits within the bar's high-low range.
+    A close at the top of the range (strong buying) adds the full volume;
+    a close at the bottom (strong selling) subtracts it.
+
+    Algorithm:
+        money_flow_multiplier = (2 × close − high − low) / (high − low)
+        money_flow_volume     = multiplier × volume
+        A/D[t]               = Σ money_flow_volume[0..t]
+
+    Doji bars (high == low, range = 0) contribute zero to the line.  The
+    A/D Line is closely related to OBV but is more nuanced: a bar where the
+    close is above the midpoint contributes positive flow even if price fell
+    from the prior close.
+
+    No leading nulls — the line starts accumulating from bar 0.
+
+    Args:
+        ohlc_vol: DataFrame with columns ``high``, ``low``, ``close``,
+            ``volume``.
+
+    Returns:
+        Series of cumulative A/D values (dtype Float64).
+    """
+    high = ohlc_vol["high"]
+    low = ohlc_vol["low"]
+    close = ohlc_vol["close"]
+    volume = ohlc_vol["volume"].cast(pl.Float64)
+
+    hl_range = high - low
+
+    # fill_nan zeroes out zero-range (doji-like) bars rather than propagating NaN.
+    mfm = ((2.0 * close - high - low) / hl_range).fill_nan(0.0)
+    mfv = mfm * volume
+
+    return mfv.cum_sum().alias("ad_line")
