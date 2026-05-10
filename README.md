@@ -271,6 +271,18 @@ st = polarticks.stochastic(df)
 cross_up = polarticks.crossover(st["stoch_k"], st["stoch_d"])
 ```
 
+#### `ppo(series, fast=12, slow=26, signal=9)` → `pl.DataFrame`
+
+Percentage Price Oscillator — MACD expressed as a percentage of the slow EMA,
+making values comparable across instruments at different price levels.  Returns
+`ppo_line`, `ppo_signal`, `ppo_histogram` with the same null-prefix structure
+as `macd()`.
+
+```python
+p = polarticks.ppo(df["close"])
+# p["ppo_line"] == +1.5 means fast EMA is 1.5% above slow EMA
+```
+
 #### `stoch_rsi(series, rsi_period=14, stoch_period=14, k_period=3, d_period=3)` → `pl.DataFrame`
 
 Stochastic oscillator applied to RSI values rather than price.  Generates
@@ -379,6 +391,17 @@ Drawdown-based volatility: `√(mean(pct_drawdown², period))`.  Only penalises
 downside moves; useful for risk-adjusted metrics like the Ulcer Performance
 Index.  Leading nulls: `2 × (period − 1)` (rolling max then rolling mean).
 
+#### `natr(ohlc, period=14)` → `pl.Series`
+
+Normalised Average True Range — ATR divided by the closing price and expressed
+as a percentage.  Makes volatility directly comparable across instruments at
+different price levels.  `period − 1` leading nulls.
+
+```python
+n = polarticks.natr(df, period=14)
+# A value of 1.5 means the ATR is 1.5% of the current close.
+```
+
 #### `chandelier_exit(ohlc, period=22, multiplier=3.0)` → `pl.DataFrame`
 
 ATR-based dynamic trailing stops for both long and short positions.
@@ -440,6 +463,44 @@ st = polarticks.supertrend(df, period=10, multiplier=2.0)
 entries = st["supertrend_direction"].diff() == 2   # flipped to bullish
 ```
 
+#### `aroon(ohlc, period=25)` → `pl.DataFrame`
+
+Aroon Indicator — measures how recently within a rolling window the highest
+high and lowest low occurred, quantifying trend freshness.
+
+| Column | Value | Meaning |
+|---|---|---|
+| `aroon_up_{period}` | 100 | New high on the current bar |
+| `aroon_up_{period}` | 0 | High was `period` bars ago |
+| `aroon_down_{period}` | 100 | New low on the current bar |
+| `aroon_osc_{period}` | +100 to −100 | Up minus Down |
+
+Leading nulls: `period` bars (window size is `period + 1`).
+
+```python
+a = polarticks.aroon(df, period=25)
+bullish = a["aroon_up_25"] > 70
+bearish = a["aroon_down_25"] > 70
+```
+
+#### `vortex(ohlc, period=14)` → `pl.DataFrame`
+
+Vortex Indicator — compares upward and downward price movements to the
+True Range to produce two oscillating directional lines.
+
+| Column | Description |
+|---|---|
+| `vi_plus_{period}` | Positive Vortex Movement / TR sum |
+| `vi_minus_{period}` | Negative Vortex Movement / TR sum |
+
+When VI+ crosses above VI− it signals an uptrend; a cross below signals a
+downtrend.  Leading nulls: `period − 1`.
+
+```python
+v = polarticks.vortex(df, period=14)
+trend_up = polarticks.crossover(v["vi_plus_14"], v["vi_minus_14"])
+```
+
 #### `parabolic_sar(ohlc, initial_af=0.02, step_af=0.02, max_af=0.20)` → `pl.DataFrame`
 
 Parabolic SAR dot plot.  Returns `psar` (price level) and `psar_direction`
@@ -479,6 +540,24 @@ above_cloud = (df["close"] > ichi["senkou_span_a"]) & (df["close"] > ichi["senko
 ---
 
 ### Volume
+
+#### `ad_line(ohlcv)` → `pl.Series`
+
+Accumulation/Distribution Line — OBV variant that weights each bar's volume
+contribution by the position of the close within the high-low range.
+
+```
+money_flow_multiplier = (2 × close − high − low) / (high − low)
+A/D[t] = A/D[t-1] + multiplier × volume
+```
+
+A rising A/D line confirms an uptrend; divergence from price signals
+weakening participation.  No leading nulls — starts accumulating from bar 0.
+
+```python
+ad = polarticks.ad_line(df)
+divergence = (df["close"] > df["close"].shift(20)) & (ad < ad.shift(20))
+```
 
 #### `obv(ohlcv)` → `pl.Series`
 
@@ -641,7 +720,7 @@ Bar-to-bar simple (arithmetic) returns.  One leading null.
 ## Running tests
 
 ```bash
-uv run pytest tests/unit/       # 325 unit tests
+uv run pytest tests/unit/       # 365 unit tests
 uv run pytest tests/            # all tests (includes benchmarks — takes ~90 s)
 ```
 
