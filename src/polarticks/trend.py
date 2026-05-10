@@ -8,6 +8,8 @@ adx                 Average Directional Index with +DI and -DI components
 supertrend          ATR-based trailing stop/trend indicator
 parabolic_sar       Parabolic SAR — acceleration-factor dot plot
 ichimoku            Ichimoku Cloud — five-component trend/support/resistance system
+aroon               Aroon Up/Down/Oscillator — time-since-extreme trend indicator
+vortex              Vortex Indicator — VI+ and VI− directional-movement lines
 """
 
 from __future__ import annotations
@@ -16,7 +18,7 @@ import polars as pl
 
 from polarticks._validate import _validate_period
 from polarticks.moving_averages import wilder_smooth
-from polarticks.volatility import atr
+from polarticks.volatility import atr, true_range
 
 
 def donchian_channels(ohlc: pl.DataFrame, period: int = 20) -> pl.DataFrame:
@@ -435,5 +437,131 @@ def ichimoku(
             "senkou_span_a": senkou_span_a,
             "senkou_span_b": senkou_span_b,
             "chikou_span": chikou_span,
+        }
+    )
+
+
+# ---------------------------------------------------------------------------
+# Aroon
+# ---------------------------------------------------------------------------
+
+
+def aroon(ohlc: pl.DataFrame, period: int = 25) -> pl.DataFrame:
+    """Aroon Indicator — measures time since the last extreme high or low.
+
+    Aroon quantifies how recently within a lookback window the highest high
+    and lowest low occurred.  Values of 100 on Aroon Up mean a new high was
+    made on the current bar; 0 means the high was made *period* bars ago.
+    Aroon Down works the same way for the lowest low.
+
+    Algorithm:
+        aroon_up[t]   = 100 × index_of_highest_high_in_window / period
+        aroon_down[t] = 100 × index_of_lowest_low_in_window  / period
+        aroon_osc[t]  = aroon_up[t] − aroon_down[t]
+
+    The window contains ``period + 1`` bars so that the current bar occupies
+    index *period* (newest) and the oldest bar occupies index 0.  When the
+    arg_max/min is at index *period* (current bar), Aroon Up/Down = 100.
+
+    The first *period* output values are ``null``.
+
+    Args:
+        ohlc: DataFrame with columns ``high`` and ``low``.
+        period: Number of bars to look back (default 25).
+
+    Returns:
+        DataFrame with columns ``aroon_up_{period}``, ``aroon_down_{period}``,
+        ``aroon_osc_{period}``.
+
+    Raises:
+        ValueError: If ``period < 1``.
+    """
+    _validate_period(period, "Aroon")
+
+    high = ohlc["high"]
+    low = ohlc["low"]
+
+    # rolling_map invokes a Python callback per window of size period + 1.
+    # index 0 = oldest bar, index period = current bar → arg_max() / period = Aroon Up.
+    aroon_up = high.rolling_map(
+        function=lambda window: 100.0 * window.arg_max() / (len(window) - 1),
+        window_size=period + 1,
+        min_samples=period + 1,
+    ).alias(f"aroon_up_{period}")
+
+    aroon_down = low.rolling_map(
+        function=lambda window: 100.0 * window.arg_min() / (len(window) - 1),
+        window_size=period + 1,
+        min_samples=period + 1,
+    ).alias(f"aroon_down_{period}")
+
+    aroon_osc = (aroon_up - aroon_down).alias(f"aroon_osc_{period}")
+
+    return pl.DataFrame(
+        {
+            f"aroon_up_{period}": aroon_up,
+            f"aroon_down_{period}": aroon_down,
+            f"aroon_osc_{period}": aroon_osc,
+        }
+    )
+
+
+# ---------------------------------------------------------------------------
+# Vortex Indicator
+# ---------------------------------------------------------------------------
+
+
+def vortex(ohlc: pl.DataFrame, period: int = 14) -> pl.DataFrame:
+    """Vortex Indicator — directional-movement lines VI+ and VI−.
+
+    The Vortex Indicator (Etienne Botes & Douglas Siepman, 2010) compares
+    upward and downward price movements to True Range, producing two
+    oscillating lines that signal trend direction and strength.
+
+    Algorithm:
+        vm_plus[t]    = |high[t] − low[t-1]|   (positive vortex movement)
+        vm_minus[t]   = |low[t]  − high[t-1]|  (negative vortex movement)
+        (bar 0 values for both are set to 0 — no prior bar)
+        VI+[t] = Σ(vm_plus,  period) / Σ(TrueRange, period)
+        VI−[t] = Σ(vm_minus, period) / Σ(TrueRange, period)
+
+    When VI+ > VI− the market is in an uptrend; when VI− > VI+ it is in a
+    downtrend.  A cross of the two lines signals a trend change.
+
+    The first ``period − 1`` output values are ``null``.
+
+    Args:
+        ohlc: DataFrame with columns ``high``, ``low``, ``close``.
+        period: Rolling sum period (default 14).
+
+    Returns:
+        DataFrame with columns ``vi_plus_{period}`` and ``vi_minus_{period}``.
+
+    Raises:
+        ValueError: If ``period < 1``.
+    """
+    _validate_period(period, "Vortex")
+
+    high = ohlc["high"]
+    low = ohlc["low"]
+
+    # |high[t] − low[t-1]|: bar 0 has no prior bar → fill to 0.
+    vm_plus = (high - low.shift(1)).abs().fill_null(0.0)
+    # |low[t] − high[t-1]|: same boundary treatment.
+    vm_minus = (low - high.shift(1)).abs().fill_null(0.0)
+
+    tr_vals = true_range(ohlc)
+
+    vm_plus_sum = vm_plus.rolling_sum(window_size=period, min_samples=period)
+    vm_minus_sum = vm_minus.rolling_sum(window_size=period, min_samples=period)
+    tr_sum = tr_vals.rolling_sum(window_size=period, min_samples=period)
+
+    vi_plus = (vm_plus_sum / tr_sum).alias(f"vi_plus_{period}")
+    vi_minus = (vm_minus_sum / tr_sum).alias(f"vi_minus_{period}")
+
+    return pl.DataFrame(
+        {
+            f"vi_plus_{period}": vi_plus,
+            f"vi_minus_{period}": vi_minus,
         }
     )
