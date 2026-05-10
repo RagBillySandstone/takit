@@ -7,6 +7,7 @@ donchian_channels   Highest high / lowest low channel over a rolling window
 adx                 Average Directional Index with +DI and -DI components
 supertrend          ATR-based trailing stop/trend indicator
 parabolic_sar       Parabolic SAR — acceleration-factor dot plot
+ichimoku            Ichimoku Cloud — five-component trend/support/resistance system
 """
 
 from __future__ import annotations
@@ -332,5 +333,107 @@ def parabolic_sar(
         {
             "psar": pl.Series("psar", sar_out, dtype=pl.Float64),
             "psar_direction": pl.Series("psar_direction", dir_out, dtype=pl.Int8),
+        }
+    )
+
+
+# ---------------------------------------------------------------------------
+# Ichimoku Cloud
+# ---------------------------------------------------------------------------
+
+
+def ichimoku(
+    ohlc: pl.DataFrame,
+    tenkan_period: int = 9,
+    kijun_period: int = 26,
+    senkou_b_period: int = 52,
+    chikou_period: int = 26,
+) -> pl.DataFrame:
+    """Ichimoku Cloud — five-component trend, momentum, and support/resistance system.
+
+    Developed by Goichi Hosoda, Ichimoku provides at-a-glance information about
+    trend direction, momentum, support, and resistance.
+
+    Components (all returned at the current bar index; no forward/backward shift
+    is applied — callers can shift as needed for visual display):
+
+        tenkan_sen    Conversion Line: midpoint of the highest high and lowest low
+                      over ``tenkan_period`` bars.  Faster trend line.
+
+        kijun_sen     Base Line: same midpoint formula over ``kijun_period`` bars.
+                      Slower trend line; crossovers with Tenkan signal trend changes.
+
+        senkou_span_a Leading Span A: (tenkan_sen + kijun_sen) / 2.  Conventionally
+                      plotted ``kijun_period`` bars ahead; forms the faster cloud edge.
+
+        senkou_span_b Leading Span B: midpoint of the highest high / lowest low over
+                      ``senkou_b_period`` bars.  Conventionally plotted ``kijun_period``
+                      bars ahead; forms the slower cloud edge.
+
+        chikou_span   Lagging Span: current close value stored at the current bar.
+                      Conventionally plotted ``chikou_period`` bars *behind* the
+                      current bar.  Returned here as ``close.shift(-chikou_period)``
+                      so that bar ``t`` holds the close from bar ``t + chikou_period``,
+                      enabling comparison of today's close to historical price.
+
+    Null-prefix summary (default periods):
+        tenkan_sen:    ``tenkan_period - 1``   (8 bars)
+        kijun_sen:     ``kijun_period - 1``    (25 bars)
+        senkou_span_a: ``kijun_period - 1``    (25 bars, limited by kijun_sen)
+        senkou_span_b: ``senkou_b_period - 1`` (51 bars)
+        chikou_span:   0 leading nulls; ``chikou_period`` trailing nulls.
+
+    Args:
+        ohlc: DataFrame with columns ``high``, ``low``, ``close``.
+        tenkan_period: Conversion Line lookback period (default 9).
+        kijun_period: Base Line lookback period (default 26).
+        senkou_b_period: Leading Span B lookback period (default 52).
+        chikou_period: Number of bars the Lagging Span is offset (default 26).
+
+    Returns:
+        DataFrame with columns ``tenkan_sen``, ``kijun_sen``, ``senkou_span_a``,
+        ``senkou_span_b``, ``chikou_span``.
+
+    Raises:
+        ValueError: If any period is less than 1.
+    """
+    _validate_period(tenkan_period, "Ichimoku tenkan_period")
+    _validate_period(kijun_period, "Ichimoku kijun_period")
+    _validate_period(senkou_b_period, "Ichimoku senkou_b_period")
+    _validate_period(chikou_period, "Ichimoku chikou_period")
+
+    high = ohlc["high"]
+    low = ohlc["low"]
+    close = ohlc["close"]
+
+    # Tenkan-sen: midpoint of the tenkan_period range.
+    tenkan_high = high.rolling_max(window_size=tenkan_period, min_samples=tenkan_period)
+    tenkan_low = low.rolling_min(window_size=tenkan_period, min_samples=tenkan_period)
+    tenkan_sen = ((tenkan_high + tenkan_low) / 2.0).alias("tenkan_sen")
+
+    # Kijun-sen: midpoint of the kijun_period range.
+    kijun_high = high.rolling_max(window_size=kijun_period, min_samples=kijun_period)
+    kijun_low = low.rolling_min(window_size=kijun_period, min_samples=kijun_period)
+    kijun_sen = ((kijun_high + kijun_low) / 2.0).alias("kijun_sen")
+
+    # Senkou Span A: average of Tenkan and Kijun; inherits the wider null prefix.
+    senkou_span_a = ((tenkan_sen + kijun_sen) / 2.0).alias("senkou_span_a")
+
+    # Senkou Span B: midpoint of the longest range window.
+    senkou_b_high = high.rolling_max(window_size=senkou_b_period, min_samples=senkou_b_period)
+    senkou_b_low = low.rolling_min(window_size=senkou_b_period, min_samples=senkou_b_period)
+    senkou_span_b = ((senkou_b_high + senkou_b_low) / 2.0).alias("senkou_span_b")
+
+    # Chikou Span: close shifted forward so bar t holds the close from t+chikou_period.
+    # This gives 0 leading nulls and chikou_period trailing nulls.
+    chikou_span = close.shift(-chikou_period).alias("chikou_span")
+
+    return pl.DataFrame(
+        {
+            "tenkan_sen": tenkan_sen,
+            "kijun_sen": kijun_sen,
+            "senkou_span_a": senkou_span_a,
+            "senkou_span_b": senkou_span_b,
+            "chikou_span": chikou_span,
         }
     )
