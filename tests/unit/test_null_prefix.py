@@ -429,3 +429,108 @@ class TestVWAPNullPrefix:
         df = polarticks.vwap_bands(_DF)
         for col in df.columns:
             assert _leading_nulls_col(df, col) == 0, f"unexpected nulls in {col}"
+
+
+# ---------------------------------------------------------------------------
+# New v0.2.0 indicators
+# ---------------------------------------------------------------------------
+
+
+class TestKAMANullPrefix:
+    """KAMA: Python-loop seeded at period - 1 → period - 1 leading nulls."""
+
+    def test_null_count(self) -> None:
+        assert _leading_nulls(polarticks.kama(_CLOSE, _P)) == _P - 1
+
+
+class TestTRIXNullPrefix:
+    """TRIX: three EMA passes then a 1-period diff → 3*(period-1)+1 nulls for trix_line;
+    signal EMA adds a further signal-1 nulls."""
+
+    _SIGNAL = 3
+
+    def test_trix_line_null_count(self) -> None:
+        expected = 3 * (_P - 1) + 1
+        df = polarticks.trix(_CLOSE, period=_P, signal=self._SIGNAL)
+        assert _leading_nulls_col(df, "trix_line") == expected
+
+    def test_trix_signal_null_count(self) -> None:
+        expected = 3 * (_P - 1) + self._SIGNAL
+        df = polarticks.trix(_CLOSE, period=_P, signal=self._SIGNAL)
+        assert _leading_nulls_col(df, "trix_signal") == expected
+
+    def test_histogram_null_count(self) -> None:
+        expected = 3 * (_P - 1) + self._SIGNAL
+        df = polarticks.trix(_CLOSE, period=_P, signal=self._SIGNAL)
+        assert _leading_nulls_col(df, "trix_histogram") == expected
+
+
+class TestStochRSINullPrefix:
+    """StochRSI: RSI + stochastic window + k SMA + d SMA chain."""
+
+    _RSI_P = _P
+    _STOCH_P = _P
+    _K_P = 3
+    _D_P = 3
+
+    @pytest.fixture()
+    def _df(self) -> pl.DataFrame:
+        return polarticks.stoch_rsi(
+            _CLOSE,
+            rsi_period=self._RSI_P,
+            stoch_period=self._STOCH_P,
+            k_period=self._K_P,
+            d_period=self._D_P,
+        )
+
+    def test_k_null_count(self, _df: pl.DataFrame) -> None:
+        expected = self._RSI_P + self._STOCH_P + self._K_P - 2
+        assert _leading_nulls_col(_df, "stoch_rsi_k") == expected
+
+    def test_d_null_count(self, _df: pl.DataFrame) -> None:
+        expected = self._RSI_P + self._STOCH_P + self._K_P + self._D_P - 3
+        assert _leading_nulls_col(_df, "stoch_rsi_d") == expected
+
+
+class TestChandelierExitNullPrefix:
+    """Chandelier Exit: rolling max/min and ATR share the same window → period - 1 nulls."""
+
+    def test_null_count(self) -> None:
+        df = polarticks.chandelier_exit(_DF, period=_P)
+        for col in df.columns:
+            assert _leading_nulls_col(df, col) == _P - 1, f"unexpected nulls in {col}"
+
+
+class TestIchimokuNullPrefix:
+    """Ichimoku: each component has its own null prefix based on its lookback period."""
+
+    _TENKAN = _P  # 5
+    _KIJUN = _P + 3  # 8
+    _SENKOU_B = _P + 7  # 12
+
+    @pytest.fixture()
+    def _df(self) -> pl.DataFrame:
+        return polarticks.ichimoku(
+            _DF,
+            tenkan_period=self._TENKAN,
+            kijun_period=self._KIJUN,
+            senkou_b_period=self._SENKOU_B,
+            chikou_period=3,
+        )
+
+    def test_tenkan_null_count(self, _df: pl.DataFrame) -> None:
+        assert _leading_nulls_col(_df, "tenkan_sen") == self._TENKAN - 1
+
+    def test_kijun_null_count(self, _df: pl.DataFrame) -> None:
+        assert _leading_nulls_col(_df, "kijun_sen") == self._KIJUN - 1
+
+    def test_senkou_a_null_count(self, _df: pl.DataFrame) -> None:
+        # Senkou A is limited by the kijun (the slower of the two inputs).
+        assert _leading_nulls_col(_df, "senkou_span_a") == self._KIJUN - 1
+
+    def test_senkou_b_null_count(self, _df: pl.DataFrame) -> None:
+        assert _leading_nulls_col(_df, "senkou_span_b") == self._SENKOU_B - 1
+
+    def test_chikou_no_leading_nulls(self, _df: pl.DataFrame) -> None:
+        # chikou_span uses shift(-n) → 0 leading nulls, trailing nulls only.
+        assert _leading_nulls_col(_df, "chikou_span") == 0
