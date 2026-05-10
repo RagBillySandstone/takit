@@ -10,6 +10,7 @@ Functions
 rsi                 Relative Strength Index (Wilder, default period 14)
 macd                MACD line, signal line, and histogram
 stochastic          Stochastic Oscillator (%K and %D)
+stoch_rsi           Stochastic applied to RSI (StochRSI %K and %D)
 williams_r          Williams %R
 cci                 Commodity Channel Index
 roc                 Rate of Change (percentage)
@@ -501,3 +502,72 @@ def ultimate_oscillator(
     return (100.0 * (4.0 * avg1 + 2.0 * avg2 + avg3) / 7.0).alias(
         f"uo_{period1}_{period2}_{period3}"
     )
+
+
+# ---------------------------------------------------------------------------
+# StochRSI
+# ---------------------------------------------------------------------------
+
+
+def stoch_rsi(
+    series: pl.Series,
+    rsi_period: int = 14,
+    stoch_period: int = 14,
+    k_period: int = 3,
+    d_period: int = 3,
+) -> pl.DataFrame:
+    """Stochastic RSI — stochastic oscillator applied to RSI values.
+
+    StochRSI generates overbought/oversold signals more frequently than raw
+    RSI because it measures RSI relative to its own range rather than price.
+    Values are in [0, 100]; readings above 80 suggest overbought, below 20
+    suggest oversold.
+
+    Algorithm:
+        rsi_vals          = RSI(series, rsi_period)
+        lowest_rsi[t]     = min(rsi_vals, stoch_period)
+        highest_rsi[t]    = max(rsi_vals, stoch_period)
+        raw_%K[t]         = 100 × (rsi_vals[t] − lowest_rsi[t])
+                            / (highest_rsi[t] − lowest_rsi[t])
+        %K                = SMA(raw_%K, k_period)        (smoothed fast line)
+        %D                = SMA(%K, d_period)            (signal / slow line)
+
+    Null-prefix for ``stoch_rsi_k``:
+        ``rsi_period + stoch_period + k_period - 2`` bars.
+    Null-prefix for ``stoch_rsi_d``:
+        ``rsi_period + stoch_period + k_period + d_period - 3`` bars.
+
+    Args:
+        series: Close price series (or any price series).
+        rsi_period: Period for the underlying RSI calculation (default 14).
+        stoch_period: Lookback window applied to RSI values (default 14).
+        k_period: Smoothing period for the fast %K line (default 3).
+        d_period: Smoothing period for the slow %D signal line (default 3).
+
+    Returns:
+        DataFrame with columns ``stoch_rsi_k`` and ``stoch_rsi_d``.
+
+    Raises:
+        ValueError: If any period is below its minimum (all must be ≥ 1,
+            ``rsi_period`` must be ≥ 2).
+    """
+    _validate_period(rsi_period, "StochRSI rsi_period", min_period=2)
+    _validate_period(stoch_period, "StochRSI stoch_period")
+    _validate_period(k_period, "StochRSI k_period")
+    _validate_period(d_period, "StochRSI d_period")
+
+    rsi_vals = rsi(series, rsi_period)
+
+    lowest_rsi = rsi_vals.rolling_min(window_size=stoch_period, min_samples=stoch_period)
+    highest_rsi = rsi_vals.rolling_max(window_size=stoch_period, min_samples=stoch_period)
+
+    rsi_range = highest_rsi - lowest_rsi
+
+    # fill_nan handles the degenerate case where RSI is constant over the window
+    # (range == 0); 50 is the neutral midpoint.
+    raw_k = (100.0 * (rsi_vals - lowest_rsi) / rsi_range).fill_nan(50.0)
+
+    k = sma(raw_k, k_period).alias("stoch_rsi_k")
+    d = sma(k, d_period).alias("stoch_rsi_d")
+
+    return pl.DataFrame({"stoch_rsi_k": k, "stoch_rsi_d": d})
