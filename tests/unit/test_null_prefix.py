@@ -16,6 +16,8 @@ Expected-null formulas used throughout:
     (slow - 1)+(sig-1)  MACD signal / histogram
     period3 - 1         Ultimate Oscillator (driven by longest window)
     (period - 1) + (round(√period) - 1)  HMA
+    period                                Aroon (window_size = period + 1)
+    0                                     A/D Line (cumulative, no warm-up)
 """
 
 from __future__ import annotations
@@ -534,3 +536,57 @@ class TestIchimokuNullPrefix:
     def test_chikou_no_leading_nulls(self, _df: pl.DataFrame) -> None:
         # chikou_span uses shift(-n) → 0 leading nulls, trailing nulls only.
         assert _leading_nulls_col(_df, "chikou_span") == 0
+
+
+class TestAroonNullPrefix:
+    """Aroon: rolling_map with window_size=period+1 → period leading nulls."""
+
+    def test_null_count(self) -> None:
+        df = polarticks.aroon(_DF, period=_P)
+        for col in df.columns:
+            assert _leading_nulls_col(df, col) == _P, f"unexpected nulls in {col}"
+
+
+class TestVortexNullPrefix:
+    """Vortex: rolling sum of size period → period - 1 leading nulls."""
+
+    def test_null_count(self) -> None:
+        df = polarticks.vortex(_DF, period=_P)
+        for col in df.columns:
+            assert _leading_nulls_col(df, col) == _P - 1, f"unexpected nulls in {col}"
+
+
+class TestPPONullPrefix:
+    """PPO: same null structure as MACD — slow EMA drives ppo_line,
+    signal EMA cascades from there."""
+
+    _FAST = _P
+    _SLOW = _P + 5  # 10
+    _SIGNAL = 3
+
+    @pytest.fixture()
+    def _df(self) -> pl.DataFrame:
+        return polarticks.ppo(_CLOSE, fast=self._FAST, slow=self._SLOW, signal=self._SIGNAL)
+
+    def test_ppo_line_null_count(self, _df: pl.DataFrame) -> None:
+        assert _leading_nulls_col(_df, "ppo_line") == self._SLOW - 1
+
+    def test_ppo_signal_null_count(self, _df: pl.DataFrame) -> None:
+        assert _leading_nulls_col(_df, "ppo_signal") == (self._SLOW - 1) + (self._SIGNAL - 1)
+
+    def test_histogram_null_count(self, _df: pl.DataFrame) -> None:
+        assert _leading_nulls_col(_df, "ppo_histogram") == (self._SLOW - 1) + (self._SIGNAL - 1)
+
+
+class TestNATRNullPrefix:
+    """NATR: inherits ATR warm-up → period - 1 leading nulls."""
+
+    def test_null_count(self) -> None:
+        assert _leading_nulls(polarticks.natr(_DF, period=_P)) == _P - 1
+
+
+class TestADLineNullPrefix:
+    """A/D Line: cum_sum from bar 0 → 0 leading nulls."""
+
+    def test_null_count(self) -> None:
+        assert _leading_nulls(polarticks.ad_line(_DF)) == 0

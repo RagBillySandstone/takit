@@ -25,6 +25,7 @@ from polarticks.momentum import (
     cmf,
     macd,
     mfi,
+    ppo,
     roc,
     rsi,
     stoch_rsi,
@@ -60,7 +61,15 @@ from polarticks.patterns import (
     is_three_black_crows,
     is_three_white_soldiers,
 )
-from polarticks.trend import adx, donchian_channels, ichimoku, parabolic_sar, supertrend
+from polarticks.trend import (
+    adx,
+    aroon,
+    donchian_channels,
+    ichimoku,
+    parabolic_sar,
+    supertrend,
+    vortex,
+)
 from polarticks.utils import crossover, crossunder, log_returns, simple_returns
 from polarticks.volatility import (
     atr,
@@ -69,10 +78,11 @@ from polarticks.volatility import (
     chandelier_exit,
     historical_volatility,
     keltner_channels,
+    natr,
     true_range,
     ulcer_index,
 )
-from polarticks.volume import obv, vwap, vwap_bands
+from polarticks.volume import ad_line, obv, vwap, vwap_bands
 
 __all__ = [
     # Moving averages
@@ -92,6 +102,7 @@ __all__ = [
     "macd",
     "stochastic",
     "stoch_rsi",
+    "ppo",
     "williams_r",
     "cci",
     "roc",
@@ -102,6 +113,7 @@ __all__ = [
     # Volatility
     "true_range",
     "atr",
+    "natr",
     "bollinger_bands",
     "keltner_channels",
     "chaikin_volatility",
@@ -114,10 +126,13 @@ __all__ = [
     "supertrend",
     "parabolic_sar",
     "ichimoku",
+    "aroon",
+    "vortex",
     # Volume
     "vwap",
     "vwap_bands",
     "obv",
+    "ad_line",
     # Levels
     "pivot_points_floor",
     "pivot_points_camarilla",
