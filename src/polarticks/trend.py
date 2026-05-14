@@ -10,14 +10,19 @@ parabolic_sar       Parabolic SAR — acceleration-factor dot plot
 ichimoku            Ichimoku Cloud — five-component trend/support/resistance system
 aroon               Aroon Up/Down/Oscillator — time-since-extreme trend indicator
 vortex              Vortex Indicator — VI+ and VI− directional-movement lines
+linreg_slope        Rolling linear regression slope coefficient
+stc                 Schaff Trend Cycle — stochastic of MACD for cycle detection
 """
 
 from __future__ import annotations
 
+import operator
+from functools import reduce
+
 import polars as pl
 
 from polarticks._validate import _validate_period
-from polarticks.moving_averages import wilder_smooth
+from polarticks.moving_averages import ema, wilder_smooth
 from polarticks.volatility import atr, true_range
 
 
@@ -484,13 +489,13 @@ def aroon(ohlc: pl.DataFrame, period: int = 25) -> pl.DataFrame:
     # rolling_map invokes a Python callback per window of size period + 1.
     # index 0 = oldest bar, index period = current bar → arg_max() / period = Aroon Up.
     aroon_up = high.rolling_map(
-        function=lambda window: 100.0 * window.arg_max() / (len(window) - 1),
+        function=lambda window: 100.0 * (window.arg_max() or 0) / (len(window) - 1),
         window_size=period + 1,
         min_samples=period + 1,
     ).alias(f"aroon_up_{period}")
 
     aroon_down = low.rolling_map(
-        function=lambda window: 100.0 * window.arg_min() / (len(window) - 1),
+        function=lambda window: 100.0 * (window.arg_min() or 0) / (len(window) - 1),
         window_size=period + 1,
         min_samples=period + 1,
     ).alias(f"aroon_down_{period}")
@@ -565,3 +570,127 @@ def vortex(ohlc: pl.DataFrame, period: int = 14) -> pl.DataFrame:
             f"vi_minus_{period}": vi_minus,
         }
     )
+
+
+# ---------------------------------------------------------------------------
+# Linear Regression Slope
+# ---------------------------------------------------------------------------
+
+
+def linreg_slope(series: pl.Series, period: int = 14) -> pl.Series:
+    """Rolling ordinary-least-squares regression slope.
+
+    Fits a straight line to the last *period* bars (using bar position 0…n−1
+    as the x-axis) and returns the slope coefficient.  A positive slope
+    indicates an uptrend; a negative slope indicates a downtrend.  The
+    magnitude reflects the rate of price change per bar.
+
+    Algorithm (for window positions k = 0, 1, … period − 1):
+        sum_x   = n(n−1)/2                (constant for any window)
+        sum_x²  = n(n−1)(2n−1)/6         (constant)
+        sum_xy  = Σ k × price[t−n+1+k]   (weighted shift sum)
+        sum_y   = rolling_sum(price, n)
+        slope   = (n·sum_xy − sum_x·sum_y) / (n·sum_x² − sum_x²)
+
+    Null-prefix: ``period − 1`` bars.
+
+    Args:
+        series: Input price series (e.g., close).
+        period: Lookback window; must be at least 2 (default 14).
+
+    Returns:
+        Series named ``linreg_slope_{period}``.
+        The first ``period − 1`` values are ``null``.
+
+    Raises:
+        ValueError: If ``period < 2``.
+    """
+    _validate_period(period, "Linear Regression Slope", min_period=2)
+
+    n = period
+    # x-axis statistics are constant for a fixed-width window.
+    sum_x = n * (n - 1) / 2.0
+    sum_x2 = n * (n - 1) * (2 * n - 1) / 6.0
+    denom = float(n) * sum_x2 - sum_x**2
+
+    # Weighted sum: Σ(k × price[t−n+1+k]) for k = 1…n−1 (k=0 contributes zero).
+    # shift(n−1−k) aligns the bar at window-position k to the current index.
+    sum_xy: pl.Series = reduce(
+        operator.add,
+        (series.shift(n - 1 - k) * float(k) for k in range(1, n)),
+    )
+    sum_y = series.rolling_sum(window_size=n, min_samples=n)
+
+    return ((float(n) * sum_xy - sum_x * sum_y) / denom).alias(f"linreg_slope_{period}")
+
+
+# ---------------------------------------------------------------------------
+# Schaff Trend Cycle (STC)
+# ---------------------------------------------------------------------------
+
+
+def stc(
+    ohlc: pl.DataFrame,
+    fast: int = 23,
+    slow: int = 50,
+    stoch_period: int = 10,
+    smooth: int = 3,
+) -> pl.Series:
+    """Schaff Trend Cycle (STC) — stochastic of MACD for faster cycle detection.
+
+    STC (Doug Schaff, 1999) applies the stochastic formula twice to a MACD
+    line, smoothing each intermediate %K with an EMA.  The result oscillates
+    between 0 and 100 and generates buy/sell signals at the 25/75 thresholds
+    — typically earlier than a raw MACD cross.
+
+    Algorithm:
+        macd_line = EMA(close, fast) − EMA(close, slow)
+        %K1       = fast-stoch(macd_line, stoch_period)  (clipped at 0, fill_nan=50)
+        %D1       = EMA(%K1, smooth)
+        %K2       = fast-stoch(%D1, stoch_period)        (clipped at 0, fill_nan=50)
+        STC       = EMA(%K2, smooth).clip(0, 100)
+
+    A reading above 75 suggests overbought; below 25 suggests oversold.
+
+    Null-prefix: ``slow + 2×stoch_period + 2×smooth − 5`` bars.
+
+    Args:
+        ohlc: DataFrame with column ``close``.
+        fast: Fast EMA period (default 23).
+        slow: Slow EMA period (default 50).
+        stoch_period: Rolling window for each stochastic pass (default 10).
+        smooth: EMA smoothing period for each intermediate %K (default 3).
+
+    Returns:
+        Series named ``stc``, values clamped to [0, 100].
+
+    Raises:
+        ValueError: If ``fast >= slow`` or any period < 1.
+    """
+    _validate_period(fast, "STC fast")
+    _validate_period(slow, "STC slow")
+    _validate_period(stoch_period, "STC stoch_period")
+    _validate_period(smooth, "STC smooth")
+    if fast >= slow:
+        raise ValueError(f"STC fast ({fast}) must be less than slow ({slow}).")
+
+    close = ohlc["close"]
+
+    # Step 1: MACD line as the input to both stochastic passes.
+    macd_line = ema(close, fast) - ema(close, slow)
+
+    # Step 2: First stochastic pass over the MACD line.
+    min1 = macd_line.rolling_min(window_size=stoch_period, min_samples=stoch_period)
+    max1 = macd_line.rolling_max(window_size=stoch_period, min_samples=stoch_period)
+    # fill_nan converts division-by-zero (flat MACD region) to mid-range (50).
+    k1 = (100.0 * (macd_line - min1) / (max1 - min1)).fill_nan(50.0)
+    d1 = ema(k1, smooth)
+
+    # Step 3: Second stochastic pass over the smoothed %K.
+    min2 = d1.rolling_min(window_size=stoch_period, min_samples=stoch_period)
+    max2 = d1.rolling_max(window_size=stoch_period, min_samples=stoch_period)
+    k2 = (100.0 * (d1 - min2) / (max2 - min2)).fill_nan(50.0)
+    stc_raw = ema(k2, smooth)
+
+    # Clamp to [0, 100] to prevent floating-point overshoot at the boundaries.
+    return stc_raw.clip(lower_bound=0.0, upper_bound=100.0).alias("stc")
