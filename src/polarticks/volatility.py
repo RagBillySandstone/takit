@@ -7,16 +7,20 @@ functions accept a ``pl.Series``.
 
 Functions
 ---------
-true_range           Single-bar True Range (prerequisite for ATR)
-atr                  Average True Range (Wilder smoothing, default period 14)
-natr                 Normalised ATR — ATR as a percentage of close
-bollinger_bands      Bollinger Bands: middle, upper, lower, %B, bandwidth
-keltner_channels     Keltner Channels: middle (EMA), upper, lower
-chaikin_volatility   Rate of change of EMA(H-L range)
+true_range            Single-bar True Range (prerequisite for ATR)
+atr                   Average True Range (Wilder smoothing, default period 14)
+natr                  Normalised ATR — ATR as a percentage of close
+bollinger_bands       Bollinger Bands: middle, upper, lower, %B, bandwidth
+keltner_channels      Keltner Channels: middle (EMA), upper, lower
+chaikin_volatility    Rate of change of EMA(H-L range)
 historical_volatility Rolling annualised standard deviation of log returns
-ulcer_index          Drawdown-based volatility measure
-chandelier_exit      ATR-based dynamic trailing-stop levels
-mass_index           Reversal detector via High-Low range expansion (Dorsey)
+ulcer_index           Drawdown-based volatility measure
+chandelier_exit       ATR-based dynamic trailing-stop levels
+mass_index            Reversal detector via High-Low range expansion (Dorsey)
+parkinson             High-Low range-based volatility estimator (Parkinson 1980)
+garman_klass          OHLC volatility estimator accounting for open-close drift
+yang_zhang            Overnight-adjusted OHLC volatility estimator (Yang-Zhang 2000)
+williams_vix_fix      Synthetic fear gauge: rolling-high distance from low
 """
 
 from __future__ import annotations
@@ -466,3 +470,218 @@ def mass_index(
     ratio = (single_ema / double_ema).fill_nan(None)
 
     return ratio.rolling_sum(window_size=sum_period, min_samples=sum_period).alias("mass_index")
+
+
+# ---------------------------------------------------------------------------
+# Parkinson Volatility
+# ---------------------------------------------------------------------------
+
+
+def parkinson(
+    ohlc: pl.DataFrame,
+    period: int = 20,
+    annualise: bool = True,
+    trading_days: int = 252,
+) -> pl.Series:
+    """Parkinson Volatility — high-low range-based volatility estimator.
+
+    The Parkinson (1980) estimator is more efficient than the close-to-close
+    historical volatility because it uses intrabar high and low information.
+    It does not account for overnight gaps or drift.
+
+    Algorithm:
+        log_hl[t]  = ln(high[t] / low[t])
+        PV         = sqrt(mean(log_hl², period) / (4 · ln 2)) × √trading_days
+
+    Null-prefix: ``period − 1`` bars.
+
+    Args:
+        ohlc: DataFrame with columns ``high`` and ``low``.
+        period: Rolling window length (default 20).
+        annualise: If ``True``, scale by ``√trading_days`` (default ``True``).
+        trading_days: Annualisation factor (default 252).
+
+    Returns:
+        Series named ``parkinson_{period}``.
+
+    Raises:
+        ValueError: If ``period < 2``.
+    """
+    _validate_period(period, "Parkinson", min_period=2)
+
+    log_hl = (ohlc["high"] / ohlc["low"]).log(base=math.e)
+
+    # 1 / (4·ln2) ≈ 0.3607 — the normalisation factor from Parkinson (1980).
+    factor = 1.0 / (4.0 * math.log(2.0))
+    variance = factor * (log_hl**2).rolling_mean(window_size=period, min_samples=period)
+
+    hv = variance.clip(lower_bound=0.0) ** 0.5
+    if annualise:
+        hv = hv * math.sqrt(trading_days)
+
+    return hv.alias(f"parkinson_{period}")
+
+
+# ---------------------------------------------------------------------------
+# Garman-Klass Volatility
+# ---------------------------------------------------------------------------
+
+
+def garman_klass(
+    ohlc: pl.DataFrame,
+    period: int = 20,
+    annualise: bool = True,
+    trading_days: int = 252,
+) -> pl.Series:
+    """Garman-Klass Volatility — OHLC estimator accounting for open-close drift.
+
+    The Garman-Klass (1980) estimator improves on Parkinson by incorporating
+    the open-to-close return as a correction for drift.  It assumes no
+    overnight gaps (open = prior close in the original derivation).
+
+    Algorithm:
+        GK[t] = 0.5 · ln(H/L)² − (2·ln2 − 1) · ln(C/O)²
+        GKV   = sqrt(mean(GK, period)) × √trading_days
+
+    Null-prefix: ``period − 1`` bars.
+
+    Args:
+        ohlc: DataFrame with columns ``open``, ``high``, ``low``, ``close``.
+        period: Rolling window length (default 20).
+        annualise: If ``True``, scale by ``√trading_days`` (default ``True``).
+        trading_days: Annualisation factor (default 252).
+
+    Returns:
+        Series named ``garman_klass_{period}``.
+
+    Raises:
+        ValueError: If ``period < 2``.
+    """
+    _validate_period(period, "Garman-Klass", min_period=2)
+
+    log_hl = (ohlc["high"] / ohlc["low"]).log(base=math.e)
+    log_co = (ohlc["close"] / ohlc["open"]).log(base=math.e)
+
+    # GK per-bar term: range component minus drift correction.
+    gk_term = 0.5 * log_hl**2 - (2.0 * math.log(2.0) - 1.0) * log_co**2
+
+    variance = gk_term.rolling_mean(window_size=period, min_samples=period)
+
+    hv = variance.clip(lower_bound=0.0) ** 0.5
+    if annualise:
+        hv = hv * math.sqrt(trading_days)
+
+    return hv.alias(f"garman_klass_{period}")
+
+
+# ---------------------------------------------------------------------------
+# Yang-Zhang Volatility
+# ---------------------------------------------------------------------------
+
+
+def yang_zhang(
+    ohlc: pl.DataFrame,
+    period: int = 20,
+    annualise: bool = True,
+    trading_days: int = 252,
+) -> pl.Series:
+    """Yang-Zhang Volatility — overnight-adjusted OHLC volatility estimator.
+
+    The Yang-Zhang (2000) estimator is the most efficient unbiased estimator
+    for close-to-close volatility that accounts for overnight gaps, open
+    jumps, and intrabar drift.  It blends three components:
+
+        σ²_overnight — sample variance of ln(Open / PrevClose) over the window
+        σ²_oc        — sample variance of ln(Close / Open) over the window
+        σ²_RS        — Rogers-Satchell rolling mean: Σ(ln(H/O)·ln(H/C) + ln(L/O)·ln(L/C))
+        k            = 0.34 / (1.34 + (n+1) / (n−1))
+        σ²_YZ        = σ²_overnight + k·σ²_oc + (1−k)·σ²_RS
+
+    Null-prefix: ``period − 1`` bars (plus 1 extra on the overnight term from the
+    shift; the rolling_std absorbs this within its own warm-up).
+
+    Args:
+        ohlc: DataFrame with columns ``open``, ``high``, ``low``, ``close``.
+        period: Rolling window length (default 20).
+        annualise: If ``True``, scale by ``√trading_days`` (default ``True``).
+        trading_days: Annualisation factor (default 252).
+
+    Returns:
+        Series named ``yang_zhang_{period}``.
+
+    Raises:
+        ValueError: If ``period < 2``.
+    """
+    _validate_period(period, "Yang-Zhang", min_period=2)
+
+    open_ = ohlc["open"]
+    high = ohlc["high"]
+    low = ohlc["low"]
+    close = ohlc["close"]
+    prev_close = close.shift(1)
+
+    # Overnight return: open vs prior close.
+    log_overnight = (open_ / prev_close).log(base=math.e)
+    # Open-to-close return: intraday component.
+    log_oc = (close / open_).log(base=math.e)
+
+    # Rogers-Satchell per-bar term (zero-mean estimator of intrabar variance).
+    rs = (high / open_).log(base=math.e) * (high / close).log(base=math.e) + (low / open_).log(
+        base=math.e
+    ) * (low / close).log(base=math.e)
+
+    # Rolling sample variances (ddof=1 via rolling_std).
+    var_overnight = log_overnight.rolling_std(window_size=period, min_samples=period) ** 2
+    var_oc = log_oc.rolling_std(window_size=period, min_samples=period) ** 2
+    # Rogers-Satchell is already zero-mean, so its rolling mean = population variance.
+    var_rs = rs.rolling_mean(window_size=period, min_samples=period)
+
+    # Optimal blend weight derived in Yang-Zhang (2000).
+    k = 0.34 / (1.34 + (period + 1) / (period - 1))
+
+    variance = var_overnight + k * var_oc + (1.0 - k) * var_rs
+
+    hv = variance.clip(lower_bound=0.0) ** 0.5
+    if annualise:
+        hv = hv * math.sqrt(trading_days)
+
+    return hv.alias(f"yang_zhang_{period}")
+
+
+# ---------------------------------------------------------------------------
+# Williams VIX Fix
+# ---------------------------------------------------------------------------
+
+
+def williams_vix_fix(ohlc: pl.DataFrame, period: int = 22) -> pl.Series:
+    """Williams VIX Fix — synthetic fear gauge based on close distance from rolling high.
+
+    The Williams VIX Fix (Larry Williams) mimics the shape of the CBOE VIX
+    using price data alone.  It spikes when the current low is far below the
+    recent rolling maximum of close prices, signalling fear or panic.
+
+    Algorithm:
+        highest_close[t] = max(close, period)
+        WVF[t]           = 100 × (highest_close[t] − low[t]) / highest_close[t]
+
+    Null-prefix: ``period − 1`` bars.
+
+    Args:
+        ohlc: DataFrame with columns ``low`` and ``close``.
+        period: Rolling window for the highest close (default 22).
+
+    Returns:
+        Series named ``wvf_{period}``, values in [0, 100].
+
+    Raises:
+        ValueError: If ``period < 1``.
+    """
+    _validate_period(period, "Williams VIX Fix")
+
+    close = ohlc["close"]
+    low = ohlc["low"]
+
+    highest_close = close.rolling_max(window_size=period, min_samples=period)
+
+    # fill_nan guards against a theoretical zero highest-close edge case.
+    return (100.0 * (highest_close - low) / highest_close).fill_nan(None).alias(f"wvf_{period}")
