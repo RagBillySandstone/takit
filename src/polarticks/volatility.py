@@ -16,6 +16,7 @@ chaikin_volatility   Rate of change of EMA(H-L range)
 historical_volatility Rolling annualised standard deviation of log returns
 ulcer_index          Drawdown-based volatility measure
 chandelier_exit      ATR-based dynamic trailing-stop levels
+mass_index           Reversal detector via High-Low range expansion (Dorsey)
 """
 
 from __future__ import annotations
@@ -414,3 +415,54 @@ def chandelier_exit(
             f"ce_short_{period}": short_exit,
         }
     )
+
+
+# ---------------------------------------------------------------------------
+# Mass Index
+# ---------------------------------------------------------------------------
+
+
+def mass_index(
+    ohlc: pl.DataFrame,
+    ema_period: int = 9,
+    sum_period: int = 25,
+) -> pl.Series:
+    """Mass Index — detects trend reversals via High-Low range expansion.
+
+    The Mass Index (Donald Dorsey, 1992) compares a double-smoothed EMA of
+    the daily price range to its single-smoothed counterpart.  When the 25-bar
+    rolling sum of the ratio forms a "reversal bulge" (rises above 27 then
+    falls back below 26.5), a trend reversal is signalled regardless of
+    direction.
+
+    Algorithm:
+        single_ema = EMA(high − low, ema_period)
+        double_ema = EMA(single_ema, ema_period)
+        mass       = Σ(single_ema / double_ema, sum_period)
+
+    Null-prefix: ``2 × (ema_period − 1) + (sum_period − 1)`` bars.
+
+    Args:
+        ohlc: DataFrame with columns ``high`` and ``low``.
+        ema_period: EMA period applied to the range for both passes (default 9).
+        sum_period: Rolling sum accumulation period (default 25).
+
+    Returns:
+        Series named ``mass_index``.
+
+    Raises:
+        ValueError: If any period < 1.
+    """
+    _validate_period(ema_period, "Mass Index ema_period")
+    _validate_period(sum_period, "Mass Index sum_period")
+
+    hl_range = ohlc["high"] - ohlc["low"]
+
+    # Two successive EMA passes; double_ema has 2×(ema_period−1) leading nulls.
+    single_ema = ema(hl_range, ema_period)
+    double_ema = ema(single_ema, ema_period)
+
+    # fill_nan handles the rare edge case of a perfectly flat price range.
+    ratio = (single_ema / double_ema).fill_nan(None)
+
+    return ratio.rolling_sum(window_size=sum_period, min_samples=sum_period).alias("mass_index")
