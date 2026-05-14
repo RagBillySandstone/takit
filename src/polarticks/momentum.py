@@ -23,9 +23,12 @@ cmo                 Chande Momentum Oscillator (net momentum as % of total movem
 dpo                 Detrended Price Oscillator (removes trend to isolate price cycles)
 kst                 Know Sure Thing (weighted sum of four smoothed ROC oscillators)
 coppock             Coppock Curve (WMA of combined ROC; long-term bottom detector)
+fisher_transform    Fisher Transform — arctanh normalisation of HL midpoint
 """
 
 from __future__ import annotations
+
+import math
 
 import polars as pl
 
@@ -816,3 +819,56 @@ def coppock(
     r2 = roc(series, short_roc)
     # WMA of the sum of both ROCs; null propagation handles the warm-up span.
     return wma(r1 + r2, wma_period).alias("coppock")
+
+
+# ---------------------------------------------------------------------------
+# Fisher Transform
+# ---------------------------------------------------------------------------
+
+
+def fisher_transform(ohlc: pl.DataFrame, period: int = 9) -> pl.DataFrame:
+    """Fisher Transform — normalises the HL midpoint to a near-Gaussian distribution.
+
+    The Fisher Transform (John Ehlers, 2002) applies the inverse hyperbolic
+    tangent (arctanh) to a price series normalised to the range (−1, 1).
+    The resulting distribution is nearly Gaussian, making extreme readings
+    statistically significant and easier to identify as turning points.
+
+    Algorithm:
+        hl2[t]       = (high[t] + low[t]) / 2
+        highest[t]   = max(hl2, period)
+        lowest[t]    = min(hl2, period)
+        value[t]     = 2 × (hl2 − lowest) / (highest − lowest) − 1
+        value        = clamp(value, −0.999, 0.999)   # avoid arctanh singularity
+        fisher[t]    = 0.5 × ln((1 + value) / (1 − value))
+        signal[t]    = fisher[t − 1]
+
+    Null-prefix: ``period − 1`` bars for ``fisher``; ``period`` bars for ``signal``.
+
+    Args:
+        ohlc: DataFrame with columns ``high`` and ``low``.
+        period: Rolling window for normalisation (default 9).
+
+    Returns:
+        DataFrame with columns ``fisher`` and ``fisher_signal``.
+
+    Raises:
+        ValueError: If ``period < 1``.
+    """
+    _validate_period(period, "Fisher Transform")
+
+    # Midpoint of the bar's range.
+    hl2 = (ohlc["high"] + ohlc["low"]) / 2.0
+
+    highest = hl2.rolling_max(window_size=period, min_samples=period)
+    lowest = hl2.rolling_min(window_size=period, min_samples=period)
+    hl_range = highest - lowest
+
+    # Normalise to (−1, 1); flat windows produce NaN from 0/0 → treat as 0.
+    value = (2.0 * (hl2 - lowest) / hl_range - 1.0).fill_nan(0.0).clip(-0.999, 0.999)
+
+    # arctanh via the logarithm identity: arctanh(x) = 0.5 * ln((1+x)/(1-x)).
+    fisher = (0.5 * ((1.0 + value) / (1.0 - value)).log(base=math.e)).alias("fisher")
+    signal = fisher.shift(1).alias("fisher_signal")
+
+    return pl.DataFrame({"fisher": fisher, "fisher_signal": signal})
