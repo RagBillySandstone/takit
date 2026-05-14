@@ -196,6 +196,9 @@ and return a `pl.Series`.
 | `mcginley_dynamic(series, period)` | Self-adjusting MA | `period − 1` |
 | `kama(series, period=10, fast_period=2, slow_period=30)` | Kaufman Adaptive MA | `period − 1` |
 | `trix(series, period=14, signal=9)` | Triple EMA oscillator + signal | `3·(period−1)+1` / `3·(period−1)+signal` |
+| `zlema(series, period)` | Zero Lag EMA — lag-corrected via shifted series | `lag + (period−1)` where `lag = (period−1)//2` |
+| `t3(series, period=5, vfactor=0.7)` | Tillson T3 — 6-pass EMA with binomial blend | `6·(period−1)` |
+| `alma(series, period=9, offset=0.85, sigma=6.0)` | Arnaud Legoux MA — Gaussian-weighted | `period − 1` |
 
 ```python
 close  = df["close"]
@@ -235,6 +238,18 @@ tx = polarticks.trix(close, period=14, signal=9)
 # tx["trix_signal"]    — EMA of the TRIX line
 # tx["trix_histogram"] — line minus signal
 ```
+
+**ZLEMA** eliminates most of EMA's lag by feeding an error-corrected input
+(`2·close − close.shift(lag)`, where `lag = (period−1)//2`) into a standard
+EMA.
+
+**T3** applies six EMA passes and blends the results with configurable binomial
+coefficients.  With the default `vfactor=0.7` it produces a line that is
+smoother than TEMA while tracking price faster than a plain triple EMA.
+
+**ALMA** weights each bar in the window using a Gaussian bell curve positioned
+by `offset` (0 = oldest, 1 = newest) and shaped by `sigma`.  The default
+`offset=0.85` keeps the bell close to the current bar for low lag.
 
 ---
 
@@ -338,6 +353,34 @@ signal   = polarticks.ema(tsi_vals.fill_null(0.0), 7)  # fill before second EMA
 Weighted blend of three time-frame buying-pressure ratios.  Values in [0, 100].
 Warm-up is `period3 − 1` bars.
 
+#### `cmo(series, period=14)` → `pl.Series`
+
+Chande Momentum Oscillator — like RSI but uses the sum of positive changes minus
+the sum of negative changes divided by their total.  Bounded in [−100, +100].
+`period` leading nulls.
+
+#### `dpo(series, period=20)` → `pl.Series`
+
+Detrended Price Oscillator — subtracts a displaced SMA to remove the dominant
+trend, isolating shorter price cycles.  `(period − 1) + (period // 2 + 1)`
+leading nulls.
+
+#### `kst(series, roc1=10, roc2=13, roc3=14, roc4=24, sma1=10, sma2=13, sma3=14, sma4=24, signal=9)` → `pl.DataFrame`
+
+Know Sure Thing — weighted sum of four smoothed ROC values across different
+time frames.  Returns `kst_line` and `kst_signal`.  Leading nulls for
+`kst_line`: `roc4 + sma4 − 1`.
+
+```python
+k = polarticks.kst(df["close"])
+crossup = polarticks.crossover(k["kst_line"], k["kst_signal"])
+```
+
+#### `coppock(series, long_roc=14, short_roc=11, wma_period=10)` → `pl.Series`
+
+Coppock Curve — WMA of the sum of two ROC values, originally designed as a
+long-term buy signal for equity indices.  Leading nulls: `long_roc + wma_period − 1`.
+
 ---
 
 ### Volatility
@@ -419,6 +462,13 @@ ce = polarticks.chandelier_exit(df, period=22, multiplier=3.0)
 long_stop  = ce["ce_long_22"]
 short_stop = ce["ce_short_22"]
 ```
+
+#### `mass_index(ohlc, ema_period=9, sum_period=25)` → `pl.Series`
+
+Mass Index — the rolling sum of the ratio of a single EMA to a double EMA of
+the high-low range.  A "reversal bulge" is traditionally signalled when the
+value rises above 27 then falls back below 26.5.  Leading nulls:
+`2·(ema_period − 1) + (sum_period − 1)`.
 
 ---
 
@@ -537,6 +587,22 @@ tk_cross = polarticks.crossover(ichi["tenkan_sen"], ichi["kijun_sen"])
 above_cloud = (df["close"] > ichi["senkou_span_a"]) & (df["close"] > ichi["senkou_span_b"])
 ```
 
+#### `linreg_slope(series, period=14)` → `pl.Series`
+
+OLS slope of a rolling linear regression line.  Positive values indicate an
+uptrend; the magnitude reflects steepness.  `period − 1` leading nulls.
+
+```python
+slope = polarticks.linreg_slope(df["close"], period=14)
+accelerating = slope > slope.shift(1)
+```
+
+#### `stc(ohlc, fast=23, slow=50, stoch_period=10, smooth=3)` → `pl.Series`
+
+Schaff Trend Cycle — applies a double stochastic to the MACD line for faster
+cycle detection.  Values are clipped to [0, 100]; readings above 75 suggest an
+uptrend and below 25 a downtrend.
+
 ---
 
 ### Volume
@@ -586,6 +652,24 @@ above_vwap = df["close"] > vwap
 
 VWAP with ±1σ and ±2σ volume-weighted standard-deviation bands.  Returns
 `vwap`, `upper_1`, `lower_1`, `upper_2`, `lower_2`.  No leading nulls.
+
+#### `kvo(ohlcv, fast=34, slow=55, signal=13)` → `pl.DataFrame`
+
+Klinger Volume Oscillator — EMA difference of a signed volume-force series that
+tracks cumulative movement and trend direction.  Returns `kvo_line` and
+`kvo_signal`.  Leading nulls for the line: `slow − 1`.
+
+#### `eom(ohlcv, period=14, divisor=10_000.0)` → `pl.Series`
+
+Ease of Movement — compares midpoint displacement to the "box ratio"
+(volume / range).  Low absolute values indicate price is moving easily on light
+volume; high values indicate effort.  `period` leading nulls.
+
+#### `pvt(ohlcv)` → `pl.Series`
+
+Price Volume Trend — cumulative sum of volume scaled by the bar's percentage
+price change.  Similar to OBV but uses the magnitude of the move rather than
+just its sign.  No leading nulls.
 
 ---
 
@@ -665,6 +749,8 @@ cannot satisfy the look-back requirement).
 | `is_three_black_crows(ohlc, body_ratio=0.5)` | Three consecutive declining bearish candles |
 | `is_morning_star(ohlc, body_ratio=0.3, star_body_ratio=0.15)` | Bearish → small star → bullish reversal |
 | `is_evening_star(ohlc, body_ratio=0.3, star_body_ratio=0.15)` | Bullish → small star → bearish reversal |
+| `is_abandoned_baby_bullish(ohlc, body_ratio=0.3, doji_ratio=0.1)` | Bearish bar → gapped-down doji → bullish bar with gap up |
+| `is_abandoned_baby_bearish(ohlc, body_ratio=0.3, doji_ratio=0.1)` | Bullish bar → gapped-up doji → bearish bar with gap down |
 
 ```python
 # Combine patterns and indicators for a signal
@@ -720,7 +806,7 @@ Bar-to-bar simple (arithmetic) returns.  One leading null.
 ## Running tests
 
 ```bash
-uv run pytest tests/unit/       # 365 unit tests
+uv run pytest tests/unit/       # 467 unit tests
 uv run pytest tests/            # all tests (includes benchmarks — takes ~90 s)
 ```
 
