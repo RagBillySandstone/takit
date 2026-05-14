@@ -7,6 +7,9 @@ vwap        Session-anchored Volume Weighted Average Price
 vwap_bands  VWAP with ±1σ / ±2σ standard-deviation bands
 obv         On-Balance Volume (running signed cumulative volume)
 ad_line     Accumulation/Distribution Line (volume-weighted cumulative flow)
+kvo         Klinger Volume Oscillator (trend-aligned cumulative volume force)
+eom         Ease of Movement (price change relative to volume pressure)
+pvt         Price Volume Trend (cumulative volume scaled by % price change)
 """
 
 from __future__ import annotations
@@ -14,6 +17,9 @@ from __future__ import annotations
 import math
 
 import polars as pl
+
+from polarticks._validate import _validate_period
+from polarticks.moving_averages import ema
 
 
 def vwap(
@@ -296,3 +302,179 @@ def ad_line(ohlc_vol: pl.DataFrame) -> pl.Series:
     mfv = mfm * volume
 
     return mfv.cum_sum().alias("ad_line")
+
+
+# ---------------------------------------------------------------------------
+# Klinger Volume Oscillator
+# ---------------------------------------------------------------------------
+
+
+def kvo(
+    ohlc_vol: pl.DataFrame,
+    fast: int = 34,
+    slow: int = 55,
+    signal: int = 13,
+) -> pl.DataFrame:
+    """Klinger Volume Oscillator — trend-aligned cumulative volume force.
+
+    The KVO (Stephen Klinger, 1997) constructs a Volume Force (VF) that
+    scales each bar's volume by the price-trend direction and by how much
+    the daily range falls inside or outside a cumulative range window.  Short
+    and long EMAs of VF are subtracted to form the oscillator.
+
+    Algorithm:
+        trend[t]   = +1 if (H+L+C)[t] > (H+L+C)[t-1] else −1
+        dm[t]      = high[t] − low[t]
+        cm[t]      = cm[t-1] + dm[t]        if trend unchanged
+                   = dm[t-1] + dm[t]        if trend reversed
+        vf[t]      = 100 × volume × trend × |2 × dm / cm − 1|
+        kvo_line   = EMA(vf, fast) − EMA(vf, slow)
+        kvo_signal = EMA(kvo_line, signal)
+
+    Null-prefix for ``kvo_line``:   ``slow − 1`` bars.
+    Null-prefix for ``kvo_signal``: ``slow + signal − 2`` bars.
+
+    Args:
+        ohlc_vol: DataFrame with columns ``high``, ``low``, ``close``, ``volume``.
+        fast: Fast EMA period (default 34).
+        slow: Slow EMA period (default 55).
+        signal: Signal line EMA period (default 13).
+
+    Returns:
+        DataFrame with columns ``kvo_line`` and ``kvo_signal``.
+
+    Raises:
+        ValueError: If ``fast >= slow`` or any period < 1.
+    """
+    _validate_period(fast, "KVO fast")
+    _validate_period(slow, "KVO slow")
+    _validate_period(signal, "KVO signal")
+    if fast >= slow:
+        raise ValueError(f"KVO fast ({fast}) must be less than slow ({slow}).")
+
+    highs = ohlc_vol["high"].to_list()
+    lows = ohlc_vol["low"].to_list()
+    closes = ohlc_vol["close"].to_list()
+    vols = ohlc_vol["volume"].cast(pl.Float64).to_list()
+    n = len(highs)
+
+    vf_list: list[float] = [0.0] * n  # bar 0 has no prior bar → zero contribution
+    prev_trend = 1
+    cm = float(highs[0] - lows[0]) if (highs[0] is not None and lows[0] is not None) else 0.0
+
+    for i in range(1, n):
+        h, lo, c, v = highs[i], lows[i], closes[i], vols[i]
+        ph, plo = highs[i - 1], lows[i - 1]
+        if any(x is None for x in (h, lo, c, v, ph, plo, closes[i - 1])):
+            continue
+
+        trend = 1 if (h + lo + c) > (ph + plo + closes[i - 1]) else -1
+        dm = h - lo  # today's high-low range
+        dm_prev = ph - plo  # prior bar's range
+
+        if trend == prev_trend:
+            cm += dm
+        else:
+            cm = dm_prev + dm
+
+        prev_trend = trend
+
+        if cm != 0.0:
+            vf_list[i] = 100.0 * v * trend * abs(2.0 * dm / cm - 1.0)
+
+    vf = pl.Series("vf", vf_list, dtype=pl.Float64)
+    kvo_line = (ema(vf, fast) - ema(vf, slow)).alias("kvo_line")
+    kvo_signal_s = ema(kvo_line, signal).alias("kvo_signal")
+
+    return pl.DataFrame({"kvo_line": kvo_line, "kvo_signal": kvo_signal_s})
+
+
+# ---------------------------------------------------------------------------
+# Ease of Movement
+# ---------------------------------------------------------------------------
+
+
+def eom(
+    ohlc_vol: pl.DataFrame,
+    period: int = 14,
+    divisor: float = 10_000.0,
+) -> pl.Series:
+    """Ease of Movement — price change relative to volume pressure.
+
+    EOM (Richard Arms, 1989) relates how far price midpoints move to the
+    volume required per unit of price range.  A large positive EOM means
+    prices advanced easily (little volume needed); a large negative value
+    means prices fell with little resistance.
+
+    Algorithm:
+        midpoint  = (high + low) / 2
+        distance  = midpoint[t] − midpoint[t-1]
+        box_ratio = (volume / divisor) / (high − low)
+        raw_eom   = distance / box_ratio
+        EOM[t]    = SMA(raw_eom, period)
+
+    Zero-range bars (high = low) contribute 0 to the rolling mean.
+    Null-prefix: ``period`` bars (1 from midpoint shift; period − 1 from SMA).
+
+    Args:
+        ohlc_vol: DataFrame with columns ``high``, ``low``, ``volume``.
+        period: SMA smoothing period (default 14).
+        divisor: Volume scale factor to bring raw EOM into a convenient range
+                 (default 10 000).
+
+    Returns:
+        Series named ``eom_{period}``.
+
+    Raises:
+        ValueError: If ``period < 1``.
+    """
+    _validate_period(period, "EOM")
+
+    mid = (ohlc_vol["high"] + ohlc_vol["low"]) / 2.0
+    distance = mid - mid.shift(1)
+
+    hl_range = ohlc_vol["high"] - ohlc_vol["low"]
+    # replace 0.0 with NaN so division produces NaN for zero-range bars.
+    safe_range = hl_range.replace(0.0, float("nan"))
+    box_ratio = (ohlc_vol["volume"].cast(pl.Float64) / divisor) / safe_range
+
+    # fill_nan(0.0): zero-range bars did not move the midpoint meaningfully.
+    raw_eom = (distance / box_ratio).fill_nan(0.0)
+
+    return raw_eom.rolling_mean(window_size=period, min_samples=period).alias(f"eom_{period}")
+
+
+# ---------------------------------------------------------------------------
+# Price Volume Trend
+# ---------------------------------------------------------------------------
+
+
+def pvt(ohlc_vol: pl.DataFrame) -> pl.Series:
+    """Price Volume Trend — cumulative volume scaled by fractional price change.
+
+    PVT accumulates volume multiplied by the percentage price change at each
+    bar.  Unlike OBV (which uses only the sign of the price change), PVT
+    weights volume by the magnitude of the move, making it more sensitive to
+    large-range sessions.
+
+    Algorithm:
+        pct_change = (close[t] − close[t-1]) / close[t-1]
+        PVT[t]     = PVT[t-1] + volume × pct_change
+
+    The first bar has no prior close → pct_change is treated as 0.
+    No leading nulls — the line starts accumulating from bar 0.
+
+    Args:
+        ohlc_vol: DataFrame with columns ``close`` and ``volume``.
+
+    Returns:
+        Series named ``pvt`` (dtype Float64).
+    """
+    close = ohlc_vol["close"]
+    volume = ohlc_vol["volume"].cast(pl.Float64)
+
+    prev_close = close.shift(1)
+    # fill_nan handles the zero-prev-close edge case (avoids inf).
+    pct_change = ((close - prev_close) / prev_close).fill_nan(0.0)
+    # Bar 0: prev_close is null → pct_change is null → treat as zero so PVT starts at 0.
+    return (volume * pct_change.fill_null(0.0)).cum_sum().alias("pvt")
