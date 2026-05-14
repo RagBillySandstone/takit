@@ -42,40 +42,40 @@
 ## New indicators (v0.2.0 roadmap)
 
 ### Moving averages
-- [ ] **ALMA** (`alma`) — Arnaud Legoux Moving Average; Gaussian-weighted, good at noise reduction.
+- [x] **ALMA** (`alma`) — Arnaud Legoux Moving Average; Gaussian-weighted, good at noise reduction.
 - [x] **KAMA** (`kama`) — Kaufman Adaptive Moving Average; self-adjusts speed based on market noise. ⭐
-- [ ] **ZLEMA** (`zlema`) — Zero Lag EMA; removes EMA lag via error correction.
-- [ ] **T3** (`t3`) — Tillson Triple EMA; smoother than TEMA, distinct algorithm.
+- [x] **ZLEMA** (`zlema`) — Zero Lag EMA; removes EMA lag via error correction.
+- [x] **T3** (`t3`) — Tillson Triple EMA; smoother than TEMA, distinct algorithm.
 
 ### Momentum / oscillators
 - [x] **StochRSI** (`stoch_rsi`) — Stochastic applied to RSI; very popular in crypto/algo trading. ⭐
-- [ ] **Aroon** (`aroon`) — Aroon Up/Down/Oscillator; measures time since highest high / lowest low.
-- [ ] **PPO** (`ppo`) — Percentage Price Oscillator; MACD normalised as a percentage.
-- [ ] **CMO** (`cmo`) — Chande Momentum Oscillator; RSI variant using positive/negative momentum ratio.
-- [ ] **DPO** (`dpo`) — Detrended Price Oscillator; removes trend to isolate price cycles.
-- [ ] **KST** (`kst`) — Know Sure Thing; weighted sum of ROC at four timeframes.
-- [ ] **Coppock Curve** (`coppock`) — long-term momentum oscillator.
+- [x] **Aroon** (`aroon`) — Aroon Up/Down/Oscillator; measures time since highest high / lowest low.
+- [x] **PPO** (`ppo`) — Percentage Price Oscillator; MACD normalised as a percentage.
+- [x] **CMO** (`cmo`) — Chande Momentum Oscillator; RSI variant using positive/negative momentum ratio.
+- [x] **DPO** (`dpo`) — Detrended Price Oscillator; removes trend to isolate price cycles.
+- [x] **KST** (`kst`) — Know Sure Thing; weighted sum of ROC at four timeframes.
+- [x] **Coppock Curve** (`coppock`) — long-term momentum oscillator.
 
 ### Trend
 - [x] **Ichimoku Cloud** (`ichimoku`) — 5-component system (Tenkan, Kijun, Senkou A/B, Chikou); multi-output. ⭐
-- [ ] **Linear Regression Slope** (`linreg_slope`) — slope of regression line over rolling window.
-- [ ] **Vortex Indicator** (`vortex`) — VI+ and VI− measure directional movement intensity.
+- [x] **Linear Regression Slope** (`linreg_slope`) — slope of regression line over rolling window.
+- [x] **Vortex Indicator** (`vortex`) — VI+ and VI− measure directional movement intensity.
 - [x] **TRIX** (`trix`) — triple-smoothed EMA, 1-period ROC; great noise filter. ⭐
-- [ ] **Schaff Trend Cycle** (`stc`) — stochastic of MACD; faster cycle detection.
+- [x] **Schaff Trend Cycle** (`stc`) — stochastic of MACD; faster cycle detection.
 
 ### Volatility
 - [x] **Chandelier Exit** (`chandelier_exit`) — ATR-based trailing stop; widely used for position exits. ⭐
-- [ ] **Mass Index** (`mass_index`) — detects reversals by measuring range expansion.
-- [ ] **NATR** (`natr`) — Normalised ATR; ATR as % of close, comparable across instruments.
+- [x] **Mass Index** (`mass_index`) — detects reversals by measuring range expansion.
+- [x] **NATR** (`natr`) — Normalised ATR; ATR as % of close, comparable across instruments.
 
 ### Volume
-- [ ] **A/D Line** (`ad_line`) — Accumulation/Distribution; OBV variant weighted by position in bar range.
-- [ ] **Klinger Volume Oscillator** (`kvo`) — short vs long EMA of signed volume flow.
-- [ ] **Ease of Movement** (`eom`) — relates price change to volume; low EOM = easy movement.
-- [ ] **PVT** (`pvt`) — Price Volume Trend; cumulative volume scaled by % price change.
+- [x] **A/D Line** (`ad_line`) — Accumulation/Distribution; OBV variant weighted by position in bar range.
+- [x] **Klinger Volume Oscillator** (`kvo`) — short vs long EMA of signed volume flow.
+- [x] **Ease of Movement** (`eom`) — relates price change to volume; low EOM = easy movement.
+- [x] **PVT** (`pvt`) — Price Volume Trend; cumulative volume scaled by % price change.
 
 ### Candlestick patterns (multi-candle)
-- [ ] **Abandoned Baby** (bullish + bearish) — gap + doji gap reversal sequence.
+- [x] **Abandoned Baby** (bullish + bearish) — gap + doji gap reversal sequence.
 
 > ⭐ = high-value picks to implement first
 
