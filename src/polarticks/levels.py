@@ -11,11 +11,12 @@ session.
 
 Functions
 ---------
-pivot_points_floor      Classic floor-trader pivot points (PP, S1-S3, R1-R3)
-pivot_points_camarilla  Camarilla pivot points (S1-S4, R1-R4)
-pivot_points_fibonacci  Fibonacci pivot points (PP ± 0.382/0.618/1.0 × range)
-pivot_points_woodie     Woodie pivot points (weights close more than floor)
-pivot_points_demark     DeMark pivot points (conditional on open vs. close)
+pivot_points_floor        Classic floor-trader pivot points (PP, S1-S3, R1-R3)
+pivot_points_camarilla    Camarilla pivot points (S1-S4, R1-R4)
+pivot_points_fibonacci    Fibonacci pivot points (PP ± 0.382/0.618/1.0 × range)
+pivot_points_woodie       Woodie pivot points (weights close more than floor)
+pivot_points_demark       DeMark pivot points (conditional on open vs. close)
+fibonacci_retracement     Fibonacci retracement levels from a high-low range
 """
 
 from __future__ import annotations
@@ -271,3 +272,61 @@ def pivot_points_demark(
     s1 = x / 2.0 - prev_high
 
     return pl.DataFrame({"dm_pp": pp, "dm_r1": r1, "dm_s1": s1})
+
+
+# ---------------------------------------------------------------------------
+# Fibonacci Retracement
+# ---------------------------------------------------------------------------
+
+
+def fibonacci_retracement(high: pl.Series, low: pl.Series) -> pl.DataFrame:
+    """Fibonacci Retracement Levels computed from a high-low range.
+
+    Given per-bar swing high and low series (often pre-computed via a rolling
+    maximum and minimum), returns the seven standard Fibonacci retracement
+    price levels.  The levels are measured as fractions of the high-low range
+    from the top down.
+
+    Levels:
+        fib_0    = high          (0%   — top of range)
+        fib_236  = high − 0.236 × range  (23.6%)
+        fib_382  = high − 0.382 × range  (38.2%)
+        fib_500  = high − 0.500 × range  (50.0%)
+        fib_618  = high − 0.618 × range  (61.8% — "golden ratio" level)
+        fib_786  = high − 0.786 × range  (78.6%)
+        fib_100  = low           (100%  — bottom of range)
+
+    No leading nulls — all levels are defined wherever ``high`` and ``low``
+    are non-null.  If the caller supplies rolling-max/min series, the
+    null-prefix of those inputs will propagate naturally.
+
+    Typical usage::
+
+        from polarticks.utils import rolling_highest, rolling_lowest
+        from polarticks.levels import fibonacci_retracement
+
+        highs = rolling_highest(df["high"], period=20)
+        lows  = rolling_lowest(df["low"], period=20)
+        fibs  = fibonacci_retracement(highs, lows)
+
+    Args:
+        high: Swing high series (e.g., rolling n-period high).
+        low:  Swing low series (e.g., rolling n-period low).
+
+    Returns:
+        DataFrame with columns ``fib_0``, ``fib_236``, ``fib_382``,
+        ``fib_500``, ``fib_618``, ``fib_786``, ``fib_100``.
+    """
+    hl_range = high - low
+
+    return pl.DataFrame(
+        {
+            "fib_0": high,
+            "fib_236": high - 0.236 * hl_range,
+            "fib_382": high - 0.382 * hl_range,
+            "fib_500": high - 0.500 * hl_range,
+            "fib_618": high - 0.618 * hl_range,
+            "fib_786": high - 0.786 * hl_range,
+            "fib_100": low,
+        }
+    )
