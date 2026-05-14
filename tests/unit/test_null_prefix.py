@@ -17,7 +17,7 @@ Expected-null formulas used throughout:
     period3 - 1         Ultimate Oscillator (driven by longest window)
     (period - 1) + (round(√period) - 1)  HMA
     period                                Aroon (window_size = period + 1)
-    0                                     A/D Line, OBV, PVT (cumulative, no warm-up)
+    0                                     A/D Line, OBV, PVT, NVI, PVI (cumulative, no warm-up)
     lag + (period - 1)  ZLEMA   lag = (period-1)//2
     6 * (period - 1)    T3      (six EMA passes)
     (period - 1) + (period//2 + 1)  DPO (shifted SMA)
@@ -27,6 +27,13 @@ Expected-null formulas used throughout:
     slow - 1            KVO line
     period              EOM     (1 shift + period-1 SMA)
     slow+2*stoch+2*smooth-5  STC
+    period - 1          rolling_highest, rolling_lowest, rolling_std, percent_rank
+    period - 1          fisher (HL midpoint rolling max/min)
+    period              fisher_signal (fisher shifted by 1)
+    period - 1          elder_ray (EMA warm-up)
+    period - 1          force_index (EMA of raw force)
+    period - 1          parkinson, garman_klass, williams_vix_fix
+    period              yang_zhang (overnight shift adds 1 extra null)
 """
 
 from __future__ import annotations
@@ -769,3 +776,109 @@ class TestPVTNullPrefix:
 
     def test_null_count(self) -> None:
         assert _leading_nulls(polarticks.pvt(_DF)) == 0
+
+
+# ---------------------------------------------------------------------------
+# v0.3.0 new indicators
+# ---------------------------------------------------------------------------
+
+
+class TestRollingHighestNullPrefix:
+    """rolling_highest: single rolling_max → period-1 leading nulls."""
+
+    def test_null_count(self) -> None:
+        assert _leading_nulls(polarticks.rolling_highest(_CLOSE, _P)) == _P - 1
+
+
+class TestRollingLowestNullPrefix:
+    """rolling_lowest: single rolling_min → period-1 leading nulls."""
+
+    def test_null_count(self) -> None:
+        assert _leading_nulls(polarticks.rolling_lowest(_CLOSE, _P)) == _P - 1
+
+
+class TestRollingStdNullPrefix:
+    """rolling_std: single rolling_std → period-1 leading nulls."""
+
+    def test_null_count(self) -> None:
+        assert _leading_nulls(polarticks.rolling_std(_CLOSE, _P)) == _P - 1
+
+
+class TestPercentRankNullPrefix:
+    """percent_rank: rolling_map with min_samples=period → period-1 leading nulls."""
+
+    def test_null_count(self) -> None:
+        assert _leading_nulls(polarticks.percent_rank(_CLOSE, _P)) == _P - 1
+
+
+class TestFisherTransformNullPrefix:
+    """Fisher Transform: rolling max/min → period-1 for fisher; signal is fisher.shift(1) → period."""
+
+    def test_fisher_null_count(self) -> None:
+        df = polarticks.fisher_transform(_DF, _P)
+        assert _leading_nulls_col(df, "fisher") == _P - 1
+
+    def test_signal_null_count(self) -> None:
+        df = polarticks.fisher_transform(_DF, _P)
+        assert _leading_nulls_col(df, "fisher_signal") == _P
+
+
+class TestElderRayNullPrefix:
+    """Elder Ray: EMA warm-up → period-1 leading nulls for both columns."""
+
+    def test_bull_power_null_count(self) -> None:
+        df = polarticks.elder_ray(_DF, _P)
+        assert _leading_nulls_col(df, "bull_power") == _P - 1
+
+    def test_bear_power_null_count(self) -> None:
+        df = polarticks.elder_ray(_DF, _P)
+        assert _leading_nulls_col(df, "bear_power") == _P - 1
+
+
+class TestForceIndexNullPrefix:
+    """Force Index: EMA of fill_null(0)-padded raw force → period-1 leading nulls."""
+
+    def test_null_count(self) -> None:
+        assert _leading_nulls(polarticks.force_index(_DF, _P)) == _P - 1
+
+
+class TestNVINullPrefix:
+    """NVI: cumulative from bar 0 → 0 leading nulls."""
+
+    def test_null_count(self) -> None:
+        assert _leading_nulls(polarticks.nvi(_DF)) == 0
+
+
+class TestPVINullPrefix:
+    """PVI: cumulative from bar 0 → 0 leading nulls."""
+
+    def test_null_count(self) -> None:
+        assert _leading_nulls(polarticks.pvi(_DF)) == 0
+
+
+class TestParkinsonNullPrefix:
+    """Parkinson: single rolling_mean → period-1 leading nulls."""
+
+    def test_null_count(self) -> None:
+        assert _leading_nulls(polarticks.parkinson(_DF, _P)) == _P - 1
+
+
+class TestGarmanKlassNullPrefix:
+    """Garman-Klass: single rolling_mean → period-1 leading nulls."""
+
+    def test_null_count(self) -> None:
+        assert _leading_nulls(polarticks.garman_klass(_DF, _P)) == _P - 1
+
+
+class TestYangZhangNullPrefix:
+    """Yang-Zhang: overnight shift(1) adds one null → period leading nulls."""
+
+    def test_null_count(self) -> None:
+        assert _leading_nulls(polarticks.yang_zhang(_DF, _P)) == _P
+
+
+class TestWilliamsVixFixNullPrefix:
+    """Williams VIX Fix: rolling_max of close → period-1 leading nulls."""
+
+    def test_null_count(self) -> None:
+        assert _leading_nulls(polarticks.williams_vix_fix(_DF, _P)) == _P - 1
