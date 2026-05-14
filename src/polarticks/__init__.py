@@ -23,6 +23,10 @@ from polarticks.levels import (
 from polarticks.momentum import (
     cci,
     cmf,
+    cmo,
+    coppock,
+    dpo,
+    kst,
     macd,
     mfi,
     ppo,
@@ -35,19 +39,24 @@ from polarticks.momentum import (
     williams_r,
 )
 from polarticks.moving_averages import (
+    alma,
     dema,
     ema,
     hma,
     kama,
     mcginley_dynamic,
     sma,
+    t3,
     tema,
     trix,
     vwma,
     wilder_smooth,
     wma,
+    zlema,
 )
 from polarticks.patterns import (
+    is_abandoned_baby_bearish,
+    is_abandoned_baby_bullish,
     is_bearish_engulfing,
     is_bearish_harami,
     is_bullish_engulfing,
@@ -66,7 +75,9 @@ from polarticks.trend import (
     aroon,
     donchian_channels,
     ichimoku,
+    linreg_slope,
     parabolic_sar,
+    stc,
     supertrend,
     vortex,
 )
@@ -78,11 +89,12 @@ from polarticks.volatility import (
     chandelier_exit,
     historical_volatility,
     keltner_channels,
+    mass_index,
     natr,
     true_range,
     ulcer_index,
 )
-from polarticks.volume import ad_line, obv, vwap, vwap_bands
+from polarticks.volume import ad_line, eom, kvo, obv, pvt, vwap, vwap_bands
 
 __all__ = [
     # Moving averages
@@ -97,6 +109,9 @@ __all__ = [
     "mcginley_dynamic",
     "kama",
     "trix",
+    "zlema",
+    "t3",
+    "alma",
     # Momentum
     "rsi",
     "macd",
@@ -110,6 +125,10 @@ __all__ = [
     "cmf",
     "tsi",
     "ultimate_oscillator",
+    "cmo",
+    "dpo",
+    "kst",
+    "coppock",
     # Volatility
     "true_range",
     "atr",
@@ -120,6 +139,7 @@ __all__ = [
     "chandelier_exit",
     "historical_volatility",
     "ulcer_index",
+    "mass_index",
     # Trend
     "donchian_channels",
     "adx",
@@ -128,11 +148,16 @@ __all__ = [
     "ichimoku",
     "aroon",
     "vortex",
+    "linreg_slope",
+    "stc",
     # Volume
     "vwap",
     "vwap_bands",
     "obv",
     "ad_line",
+    "kvo",
+    "eom",
+    "pvt",
     # Levels
     "pivot_points_floor",
     "pivot_points_camarilla",
@@ -152,6 +177,8 @@ __all__ = [
     "is_evening_star",
     "is_bullish_harami",
     "is_bearish_harami",
+    "is_abandoned_baby_bullish",
+    "is_abandoned_baby_bearish",
     # Utils
     "crossover",
     "crossunder",

@@ -8,7 +8,7 @@ Expected-null formulas used throughout:
     period - 1          single rolling window of size *period*
     2 * (period - 1)    two sequential rolling windows (DEMA, Ulcer, ADX)
     3 * (period - 1)    three sequential rolling windows (TEMA)
-    period              shift-based or diff-seeded indicators (RSI, ROC, HV)
+    period              shift-based or diff-seeded indicators (RSI, ROC, HV, CMO)
     slow + fast - 1     double-EMA chain seeded by diff (TSI)
     (ema_p - 1) + roc_p two-stage EMA-then-shift (Chaikin Volatility)
     k_period - 1        first stage of stochastic (%K)
@@ -17,7 +17,16 @@ Expected-null formulas used throughout:
     period3 - 1         Ultimate Oscillator (driven by longest window)
     (period - 1) + (round(√period) - 1)  HMA
     period                                Aroon (window_size = period + 1)
-    0                                     A/D Line (cumulative, no warm-up)
+    0                                     A/D Line, OBV, PVT (cumulative, no warm-up)
+    lag + (period - 1)  ZLEMA   lag = (period-1)//2
+    6 * (period - 1)    T3      (six EMA passes)
+    (period - 1) + (period//2 + 1)  DPO (shifted SMA)
+    roc4 + sma4 - 1     KST     (slowest component drives nulls)
+    long_roc + wma_p - 1  Coppock
+    2*(ema_p-1)+(sum_p-1) Mass Index
+    slow - 1            KVO line
+    period              EOM     (1 shift + period-1 SMA)
+    slow+2*stoch+2*smooth-5  STC
 """
 
 from __future__ import annotations
@@ -590,3 +599,173 @@ class TestADLineNullPrefix:
 
     def test_null_count(self) -> None:
         assert _leading_nulls(polarticks.ad_line(_DF)) == 0
+
+
+# ---------------------------------------------------------------------------
+# v0.3.0 indicators
+# ---------------------------------------------------------------------------
+
+
+class TestZLEMANullPrefix:
+    """ZLEMA: shift(lag) warm-up + EMA warm-up → lag + (period-1) leading nulls."""
+
+    def test_null_count(self) -> None:
+        lag = (_P - 1) // 2
+        expected = lag + (_P - 1)
+        assert _leading_nulls(polarticks.zlema(_CLOSE, _P)) == expected
+
+
+class TestT3NullPrefix:
+    """T3: six EMA passes → 6*(period-1) leading nulls."""
+
+    def test_null_count(self) -> None:
+        assert _leading_nulls(polarticks.t3(_CLOSE, _P)) == 6 * (_P - 1)
+
+
+class TestALMANullPrefix:
+    """ALMA: Gaussian-weighted WMA → period-1 leading nulls (same as SMA/WMA)."""
+
+    def test_null_count(self) -> None:
+        assert _leading_nulls(polarticks.alma(_CLOSE, _P)) == _P - 1
+
+
+class TestCMONullPrefix:
+    """CMO: diff(1) + rolling_sum → period leading nulls."""
+
+    def test_null_count(self) -> None:
+        assert _leading_nulls(polarticks.cmo(_CLOSE, _P)) == _P
+
+
+class TestDPONullPrefix:
+    """DPO: SMA warm-up + displacement shift → (period-1) + (period//2+1) nulls."""
+
+    def test_null_count(self) -> None:
+        expected = (_P - 1) + (_P // 2 + 1)
+        assert _leading_nulls(polarticks.dpo(_CLOSE, _P)) == expected
+
+
+class TestKSTNullPrefix:
+    """KST: slowest ROC+SMA component drives the null count."""
+
+    _R4 = _P
+    _S4 = _P
+
+    def test_kst_line_null_count(self) -> None:
+        df = polarticks.kst(
+            _CLOSE,
+            roc1=2,
+            roc2=3,
+            roc3=4,
+            roc4=self._R4,
+            sma1=2,
+            sma2=3,
+            sma3=4,
+            sma4=self._S4,
+            signal=2,
+        )
+        expected = self._R4 + self._S4 - 1
+        assert _leading_nulls_col(df, "kst_line") == expected
+
+    def test_kst_signal_null_count(self) -> None:
+        signal = 3
+        df = polarticks.kst(
+            _CLOSE,
+            roc1=2,
+            roc2=3,
+            roc3=4,
+            roc4=self._R4,
+            sma1=2,
+            sma2=3,
+            sma3=4,
+            sma4=self._S4,
+            signal=signal,
+        )
+        expected = (self._R4 + self._S4 - 1) + (signal - 1)
+        assert _leading_nulls_col(df, "kst_signal") == expected
+
+
+class TestCoppockNullPrefix:
+    """Coppock: long_roc nulls + wma_period - 1 from WMA."""
+
+    _LONG_ROC = _P
+    _WMA_P = _P
+
+    def test_null_count(self) -> None:
+        expected = self._LONG_ROC + self._WMA_P - 1
+        assert (
+            _leading_nulls(
+                polarticks.coppock(
+                    _CLOSE, long_roc=self._LONG_ROC, short_roc=3, wma_period=self._WMA_P
+                )
+            )
+            == expected
+        )
+
+
+class TestLinregSlopeNullPrefix:
+    """linreg_slope: single rolling window → period-1 leading nulls."""
+
+    def test_null_count(self) -> None:
+        assert _leading_nulls(polarticks.linreg_slope(_CLOSE, _P)) == _P - 1
+
+
+class TestSTCNullPrefix:
+    """STC: slow + 2*stoch + 2*smooth - 5 leading nulls."""
+
+    _FAST = _P
+    _SLOW = _P + 3
+    _STOCH = _P
+    _SMOOTH = 2
+
+    def test_null_count(self) -> None:
+        expected = self._SLOW + 2 * self._STOCH + 2 * self._SMOOTH - 5
+        result = polarticks.stc(
+            _DF, fast=self._FAST, slow=self._SLOW, stoch_period=self._STOCH, smooth=self._SMOOTH
+        )
+        assert _leading_nulls(result) == expected
+
+
+class TestMassIndexNullPrefix:
+    """Mass Index: 2*(ema_p-1) + (sum_p-1) leading nulls."""
+
+    _EMA_P = _P
+    _SUM_P = _P
+
+    def test_null_count(self) -> None:
+        expected = 2 * (self._EMA_P - 1) + (self._SUM_P - 1)
+        assert (
+            _leading_nulls(
+                polarticks.mass_index(_DF, ema_period=self._EMA_P, sum_period=self._SUM_P)
+            )
+            == expected
+        )
+
+
+class TestKVONullPrefix:
+    """KVO: slow-1 leading nulls for kvo_line; slow+signal-2 for kvo_signal."""
+
+    _FAST = _P
+    _SLOW = _P + 3
+    _SIGNAL = 3
+
+    def test_kvo_line_null_count(self) -> None:
+        df = polarticks.kvo(_DF, fast=self._FAST, slow=self._SLOW, signal=self._SIGNAL)
+        assert _leading_nulls_col(df, "kvo_line") == self._SLOW - 1
+
+    def test_kvo_signal_null_count(self) -> None:
+        df = polarticks.kvo(_DF, fast=self._FAST, slow=self._SLOW, signal=self._SIGNAL)
+        assert _leading_nulls_col(df, "kvo_signal") == self._SLOW + self._SIGNAL - 2
+
+
+class TestEOMNullPrefix:
+    """EOM: 1 null from midpoint shift + period-1 from SMA → period leading nulls."""
+
+    def test_null_count(self) -> None:
+        assert _leading_nulls(polarticks.eom(_DF, _P)) == _P
+
+
+class TestPVTNullPrefix:
+    """PVT: cumulative from bar 0 → 0 leading nulls."""
+
+    def test_null_count(self) -> None:
+        assert _leading_nulls(polarticks.pvt(_DF)) == 0
