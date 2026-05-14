@@ -91,30 +91,30 @@
 ## New indicators (v0.3.0 roadmap)
 
 ### Momentum / oscillators
-- [ ] **Fisher Transform** (`fisher_transform`) — normalizes HL midpoint to a Gaussian distribution via arctanh; highlights turning points.
+- [x] **Fisher Transform** (`fisher_transform`) — normalizes HL midpoint to a Gaussian distribution via arctanh; highlights turning points.
 
 ### Volatility
-- [ ] **Parkinson Volatility** (`parkinson`) — high-low range-based estimator; more efficient than close-to-close HV.
-- [ ] **Garman-Klass Volatility** (`garman_klass`) — OHLC estimator that accounts for open-close drift.
-- [ ] **Yang-Zhang Volatility** (`yang_zhang`) — accounts for overnight gaps; combines Garman-Klass with Rogers-Satchell.
-- [ ] **Williams VIX Fix** (`williams_vix_fix`) — synthetic fear gauge: `(rolling_max(close) − low) / rolling_max(close)`.
+- [x] **Parkinson Volatility** (`parkinson`) — high-low range-based estimator; more efficient than close-to-close HV.
+- [x] **Garman-Klass Volatility** (`garman_klass`) — OHLC estimator that accounts for open-close drift.
+- [x] **Yang-Zhang Volatility** (`yang_zhang`) — accounts for overnight gaps; combines Garman-Klass with Rogers-Satchell.
+- [x] **Williams VIX Fix** (`williams_vix_fix`) — synthetic fear gauge: `(rolling_max(close) − low) / rolling_max(close)`.
 
 ### Trend
-- [ ] **Elder Ray Index** (`elder_ray`) — Bull Power (`high − EMA`) and Bear Power (`low − EMA`).
+- [x] **Elder Ray Index** (`elder_ray`) — Bull Power (`high − EMA`) and Bear Power (`low − EMA`).
 
 ### Volume
-- [ ] **Force Index** (`force_index`) — Elder's force index: EMA of `(close − prev_close) × volume`.
-- [ ] **NVI** (`nvi`) — Negative Volume Index; cumulates price-change only on days when volume falls.
-- [ ] **PVI** (`pvi`) — Positive Volume Index; cumulates price-change only on days when volume rises.
+- [x] **Force Index** (`force_index`) — Elder's force index: EMA of `(close − prev_close) × volume`.
+- [x] **NVI** (`nvi`) — Negative Volume Index; cumulates price-change only on days when volume falls.
+- [x] **PVI** (`pvi`) — Positive Volume Index; cumulates price-change only on days when volume rises.
 
 ### Utilities
-- [ ] **Rolling Highest** (`rolling_highest`) — rolling n-period maximum; building block for many indicators.
-- [ ] **Rolling Lowest** (`rolling_lowest`) — rolling n-period minimum.
-- [ ] **Rolling Std** (`rolling_std`) — rolling n-period sample standard deviation.
-- [ ] **Percent Rank** (`percent_rank`) — rolling percentile rank of current value within the last n bars.
+- [x] **Rolling Highest** (`rolling_highest`) — rolling n-period maximum; building block for many indicators.
+- [x] **Rolling Lowest** (`rolling_lowest`) — rolling n-period minimum.
+- [x] **Rolling Std** (`rolling_std`) — rolling n-period sample standard deviation.
+- [x] **Percent Rank** (`percent_rank`) — rolling percentile rank of current value within the last n bars.
 
 ### Levels / structure
-- [ ] **Fibonacci Retracement** (`fibonacci_retracement`) — levels at 0%, 23.6%, 38.2%, 50%, 61.8%, 78.6%, 100% of a given high-low range.
+- [x] **Fibonacci Retracement** (`fibonacci_retracement`) — levels at 0%, 23.6%, 38.2%, 50%, 61.8%, 78.6%, 100% of a given high-low range.
 
 ---
 
