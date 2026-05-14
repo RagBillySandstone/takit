@@ -18,10 +18,14 @@ vwma              Volume-Weighted Moving Average
 mcginley_dynamic  McGinley Dynamic            (self-adjusting, tracks price closely)
 kama              Kaufman Adaptive Moving Average (ER-based adaptive smoothing)
 trix              Triple-smoothed EMA oscillator with signal line
+zlema             Zero Lag EMA                (lag-corrected via error-correction term)
+t3                Tillson T3                  (triple GD expansion; low-lag, smooth)
+alma              Arnaud Legoux Moving Average (Gaussian-weighted rolling mean)
 """
 
 from __future__ import annotations
 
+import math
 import operator
 from functools import reduce
 
@@ -514,3 +518,160 @@ def trix(
     return pl.DataFrame(
         {"trix_line": trix_line, "trix_signal": signal_line, "trix_histogram": histogram}
     )
+
+
+# ---------------------------------------------------------------------------
+# ZLEMA
+# ---------------------------------------------------------------------------
+
+
+def zlema(series: pl.Series, period: int) -> pl.Series:
+    """Zero Lag Exponential Moving Average.
+
+    ZLEMA reduces EMA lag by adjusting the input with an error-correction term
+    that compensates for the half-period delay inherent in a standard EMA.
+
+    Algorithm:
+        lag      = (period − 1) // 2
+        adjusted = 2 × price[t] − price[t − lag]
+        ZLEMA    = EMA(adjusted, period)
+
+    The de-lagged input introduces ``lag`` leading nulls before the EMA
+    warm-up, giving a total null-prefix of ``lag + (period − 1)`` bars.
+
+    Args:
+        series: Input price series (e.g., close).
+        period: EMA period.
+
+    Returns:
+        Series of ZLEMA values.  First ``(period − 1) // 2 + period − 1`` values
+        are ``null``.
+
+    Raises:
+        ValueError: If ``period < 1``.
+    """
+    _validate_period(period, "ZLEMA")
+
+    lag = (period - 1) // 2
+    # De-lagged input: emphasise current price direction by doubling and
+    # subtracting the lagged copy; shift(lag) introduces lag leading nulls.
+    adjusted = (2.0 * series - series.shift(lag)).alias("zlema_adj")
+    return ema(adjusted, period).alias(f"zlema_{period}")
+
+
+# ---------------------------------------------------------------------------
+# T3
+# ---------------------------------------------------------------------------
+
+
+def t3(series: pl.Series, period: int = 5, vfactor: float = 0.7) -> pl.Series:
+    """Tillson T3 Moving Average — low-lag triple-smoothed EMA.
+
+    T3 applies six successive EMA passes and combines them with weights
+    derived from the *volume factor* (``vfactor``), which is mathematically
+    equivalent to applying the Generalised Double EMA (GD) three times:
+
+        GD(x, v)  = (1 + v) × EMA(x, n) − v × EMA(EMA(x, n), n)
+        T3        = GD(GD(GD(price, v), v), v)
+
+    Expanding the three GD applications yields:
+        T3 = c3 × e3 + c4 × e4 + c5 × e5 + c6 × e6
+
+    where e1…e6 are successive EMA passes and:
+        c3 =  (1 + v)³
+        c4 = −3v(1 + v)²
+        c5 =  3v²(1 + v)
+        c6 = −v³
+
+    With ``vfactor = 0``, T3 degenerates to the plain triple EMA (e3).
+
+    Null-prefix: ``6 × (period − 1)`` bars.
+
+    Args:
+        series: Input price series (e.g., close).
+        period: EMA period applied at each of the six passes (default 5).
+        vfactor: Volume factor in [0, 1] trading smoothness for responsiveness
+                 (default 0.7).
+
+    Returns:
+        Series of T3 values.  The first ``6 × (period − 1)`` values are ``null``.
+
+    Raises:
+        ValueError: If ``period < 1``.
+    """
+    _validate_period(period, "T3")
+
+    # Six successive EMA passes; each adds (period − 1) leading nulls.
+    e1 = ema(series, period)
+    e2 = ema(e1, period)
+    e3 = ema(e2, period)
+    e4 = ema(e3, period)
+    e5 = ema(e4, period)
+    e6 = ema(e5, period)
+
+    # Binomial expansion coefficients for GD applied three times.
+    v = vfactor
+    c3 = (1.0 + v) ** 3
+    c4 = -3.0 * v * (1.0 + v) ** 2
+    c5 = 3.0 * v**2 * (1.0 + v)
+    c6 = -(v**3)
+
+    return (c3 * e3 + c4 * e4 + c5 * e5 + c6 * e6).alias(f"t3_{period}")
+
+
+# ---------------------------------------------------------------------------
+# ALMA
+# ---------------------------------------------------------------------------
+
+
+def alma(
+    series: pl.Series,
+    period: int = 9,
+    offset: float = 0.85,
+    sigma: float = 6.0,
+) -> pl.Series:
+    """Arnaud Legoux Moving Average — Gaussian-weighted rolling mean.
+
+    ALMA applies a Gaussian window centred at ``offset`` within the lookback
+    period.  Placing the peak near the recent end (``offset = 0.85``) reduces
+    lag; widening the bell (lower ``sigma``) increases smoothness at the cost
+    of responsiveness.
+
+    Algorithm:
+        mu      = offset × (period − 1)
+        s       = period / sigma
+        w_k     = exp(−(k − mu)² / (2 × s²)),  k = 0 … period − 1
+        ALMA[t] = Σ_k (w_k / Σ w) × price[t − (period − 1 − k)]
+
+    Null-prefix: ``period − 1`` bars (same as SMA/WMA).
+
+    Args:
+        series: Input price series (e.g., close).
+        period: Lookback window (default 9).
+        offset: Gaussian peak position within the window as a fraction in
+                [0, 1]; 0 = oldest bar, 1 = newest bar (default 0.85).
+        sigma: Gaussian width divisor; higher values narrow the bell curve
+               and reduce smoothing (default 6.0).
+
+    Returns:
+        Series of ALMA values.  The first ``period − 1`` values are ``null``.
+
+    Raises:
+        ValueError: If ``period < 1``.
+    """
+    _validate_period(period, "ALMA")
+
+    # Build normalised Gaussian weights over the lookback window.
+    mu = offset * (period - 1)
+    s = period / sigma
+    raw_weights = [math.exp(-((k - mu) ** 2) / (2.0 * s**2)) for k in range(period)]
+    weight_sum = sum(raw_weights)
+    norm_weights = [w / weight_sum for w in raw_weights]
+
+    # Weighted sum of shifted copies: shift(period-1-k) aligns the bar at
+    # position k within the window (k=0 is oldest, k=period-1 is current bar).
+    weighted: pl.Series = reduce(
+        operator.add,
+        (series.shift(period - 1 - i) * norm_weights[i] for i in range(period)),
+    )
+    return weighted.alias(f"alma_{period}")
