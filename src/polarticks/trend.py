@@ -12,6 +12,7 @@ aroon               Aroon Up/Down/Oscillator — time-since-extreme trend indica
 vortex              Vortex Indicator — VI+ and VI− directional-movement lines
 linreg_slope        Rolling linear regression slope coefficient
 stc                 Schaff Trend Cycle — stochastic of MACD for cycle detection
+elder_ray           Elder Ray Index — Bull Power and Bear Power vs EMA
 """
 
 from __future__ import annotations
@@ -694,3 +695,48 @@ def stc(
 
     # Clamp to [0, 100] to prevent floating-point overshoot at the boundaries.
     return stc_raw.clip(lower_bound=0.0, upper_bound=100.0).alias("stc")
+
+
+# ---------------------------------------------------------------------------
+# Elder Ray Index
+# ---------------------------------------------------------------------------
+
+
+def elder_ray(ohlc: pl.DataFrame, period: int = 13) -> pl.DataFrame:
+    """Elder Ray Index — Bull Power and Bear Power relative to an EMA.
+
+    Developed by Dr Alexander Elder, the indicator splits market force into
+    two components: the bulls' ability to push price above the consensus EMA
+    (Bull Power) and the bears' ability to push price below it (Bear Power).
+
+    Algorithm:
+        ema_close   = EMA(close, period)
+        bull_power  = high  − ema_close
+        bear_power  = low   − ema_close
+
+    Interpretation:
+        - Bull Power > 0 and rising → bulls are strengthening.
+        - Bear Power < 0 and rising (becoming less negative) → bears weakening.
+        - Divergence between price and either power line signals reversals.
+
+    Null-prefix: ``period − 1`` bars (inherited from the EMA).
+
+    Args:
+        ohlc: DataFrame with columns ``high``, ``low``, ``close``.
+        period: EMA lookback period (default 13).
+
+    Returns:
+        DataFrame with columns ``bull_power`` and ``bear_power``.
+
+    Raises:
+        ValueError: If ``period < 1``.
+    """
+    _validate_period(period, "Elder Ray")
+
+    ema_close = ema(ohlc["close"], period)
+
+    # Distance of the bar's extreme from the consensus EMA level.
+    bull_power = (ohlc["high"] - ema_close).alias("bull_power")
+    bear_power = (ohlc["low"] - ema_close).alias("bear_power")
+
+    return pl.DataFrame({"bull_power": bull_power, "bear_power": bear_power})
