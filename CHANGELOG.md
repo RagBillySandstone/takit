@@ -7,6 +7,41 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [0.3.0] — 2026-05-14
+
+### Added
+
+#### Momentum
+- `fisher_transform(ohlc, period=9)` — arctanh normalisation of the HL midpoint; returns `fisher` and `fisher_signal` columns
+
+#### Volatility
+- `parkinson(ohlc, period=20, annualise=True, trading_days=252)` — high-low range-based estimator (more efficient than close-to-close HV)
+- `garman_klass(ohlc, period=20, annualise=True, trading_days=252)` — OHLC estimator accounting for open-close drift
+- `yang_zhang(ohlc, period=20, annualise=True, trading_days=252)` — overnight-adjusted OHLC estimator (combines Rogers-Satchell with overnight variance); `period` leading nulls
+- `williams_vix_fix(ohlc, period=22)` — synthetic fear gauge: `100 × (rolling_max(close) − low) / rolling_max(close)`
+
+#### Trend
+- `elder_ray(ohlc, period=13)` — Bull Power (`high − EMA`) and Bear Power (`low − EMA`); returns both columns in a `pl.DataFrame`
+
+#### Volume
+- `force_index(ohlcv, period=13)` — Elder's Force Index: EMA of `(close − prev_close) × volume`
+- `nvi(ohlcv)` — Negative Volume Index; accumulates price change only on falling-volume bars (starts at 1000; no leading nulls)
+- `pvi(ohlcv)` — Positive Volume Index; accumulates price change only on rising-volume bars (starts at 1000; no leading nulls)
+
+#### Levels
+- `fibonacci_retracement(high, low)` — seven standard Fibonacci retracement levels (0%, 23.6%, 38.2%, 50%, 61.8%, 78.6%, 100%) from a high-low range
+
+#### Utilities
+- `rolling_highest(series, period)` — rolling n-period maximum; `period − 1` leading nulls
+- `rolling_lowest(series, period)` — rolling n-period minimum; `period − 1` leading nulls
+- `rolling_std(series, period)` — rolling n-period sample standard deviation (ddof=1); `period − 1` leading nulls
+- `percent_rank(series, period)` — rolling percentile rank: fraction of the last n bars ≤ current value, scaled to [0, 100]
+
+### Tests
+- 110 new unit tests across `test_v03_indicators.py` and `test_null_prefix.py` (577 total)
+
+---
+
 ## [0.1.0] — 2026-05-08
 
 Initial public release of polarticks, a Polars-native technical analysis library.

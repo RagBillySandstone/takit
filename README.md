@@ -603,6 +603,25 @@ Schaff Trend Cycle — applies a double stochastic to the MACD line for faster
 cycle detection.  Values are clipped to [0, 100]; readings above 75 suggest an
 uptrend and below 25 a downtrend.
 
+#### `elder_ray(ohlc, period=13)` → `pl.DataFrame`
+
+Elder Ray Index — measures market force by splitting it into two components:
+
+- **Bull Power** = `high − EMA(close, period)` — how far bulls push price above the consensus level
+- **Bear Power** = `low − EMA(close, period)` — how far bears push price below it
+
+Bull Power > 0 and rising indicates strengthening bulls; Bear Power < 0 and rising (becoming less negative) indicates weakening bears.  `period − 1` leading nulls.
+
+```python
+er = polarticks.elder_ray(df, period=13)
+# er["bull_power"], er["bear_power"]
+
+# Classic Elder entry: EMA trending up, bear_power < 0 but rising
+ema_rising = polarticks.ema(df["close"], 13) > polarticks.ema(df["close"], 13).shift(1)
+bear_diverging = er["bear_power"] > er["bear_power"].shift(1)
+entry = ema_rising & (er["bear_power"] < 0) & bear_diverging
+```
+
 ---
 
 ### Volume
@@ -671,6 +690,37 @@ Price Volume Trend — cumulative sum of volume scaled by the bar's percentage
 price change.  Similar to OBV but uses the magnitude of the move rather than
 just its sign.  No leading nulls.
 
+#### `force_index(ohlcv, period=13)` → `pl.Series`
+
+Elder's Force Index — EMA of `(close − prev_close) × volume`.  Combines the
+direction and magnitude of a price move with its volume to measure buying or
+selling force.  Positive values indicate buying pressure; negative values
+indicate selling pressure.  `period − 1` leading nulls.
+
+```python
+fi = polarticks.force_index(df, period=13)
+```
+
+#### `nvi(ohlcv)` → `pl.Series`
+
+Negative Volume Index — accumulates price change only on bars where volume is
+*lower* than the prior bar, tracking what the "smart money" does on quiet days.
+Starts at 1000; no leading nulls.
+
+#### `pvi(ohlcv)` → `pl.Series`
+
+Positive Volume Index — accumulates price change only on bars where volume is
+*higher* than the prior bar, tracking crowd activity on busy days.
+Starts at 1000; no leading nulls.
+
+```python
+nvi = polarticks.nvi(df)
+pvi = polarticks.pvi(df)
+# When NVI is above its 255-bar EMA, the smart-money trend is up.
+nvi_signal = polarticks.ema(nvi, 255)
+bull_regime = nvi > nvi_signal
+```
+
 ---
 
 ### Levels (pivot points)
@@ -703,6 +753,22 @@ Double-weights the prior close.  Columns: `wood_pp`, `wood_r1`, `wood_r2`,
 Adapts the formula based on whether the prior session closed above, below, or
 equal to its open.  Returns a single resistance and support level.
 Columns: `dm_pp`, `dm_r1`, `dm_s1`.
+
+#### `fibonacci_retracement(high, low)` → `pl.DataFrame`
+
+Computes the seven standard Fibonacci retracement levels from a high-low range.
+Accepts any `pl.Series` pair — typically the outputs of `rolling_highest` and
+`rolling_lowest`.
+
+Columns: `fib_0` (0%), `fib_236` (23.6%), `fib_382` (38.2%), `fib_500` (50%),
+`fib_618` (61.8%), `fib_786` (78.6%), `fib_100` (100%).
+
+```python
+highs = polarticks.rolling_highest(df["high"], period=20)
+lows  = polarticks.rolling_lowest(df["low"],  period=20)
+fibs  = polarticks.fibonacci_retracement(highs, lows)
+# fibs["fib_618"] — the golden-ratio support/resistance level
+```
 
 ```python
 n = len(df)
@@ -801,12 +867,87 @@ Bar-to-bar log returns: `ln(price[t] / price[t-1])`.  One leading null.
 
 Bar-to-bar simple (arithmetic) returns.  One leading null.
 
+#### `rolling_highest(series, period)` → `pl.Series`
+
+Rolling n-period maximum.  `period − 1` leading nulls.  Useful as a building
+block for indicators that need the recent high (e.g. Fibonacci retracement,
+Williams VIX Fix, Donchian breakout signals).
+
+#### `rolling_lowest(series, period)` → `pl.Series`
+
+Rolling n-period minimum.  `period − 1` leading nulls.
+
+#### `rolling_std(series, period)` → `pl.Series`
+
+Rolling n-period sample standard deviation (ddof=1).  `period − 1` leading
+nulls.  Requires `period ≥ 2`.
+
+#### `percent_rank(series, period)` → `pl.Series`
+
+Rolling percentile rank — the fraction of the last *period* bars whose value is
+≤ the current bar, scaled to [0, 100].  A value of 100 means the current bar is
+the highest in the window; 0 means it is the lowest.  `period − 1` leading nulls.
+
+```python
+# Combine with RSI to find historically extreme readings
+rsi_rank = polarticks.percent_rank(polarticks.rsi(df["close"], 14), period=252)
+historically_oversold = rsi_rank < 10   # RSI in bottom decile of past year
+```
+
+---
+
+### New volatility estimators (v0.3.0)
+
+These estimators use intrabar (OHLC) data for more efficient volatility
+measurement than the close-to-close `historical_volatility`.
+
+#### `parkinson(ohlc, period=20, annualise=True, trading_days=252)` → `pl.Series`
+
+Parkinson (1980) estimator — uses the log ratio of high to low.  5× more
+efficient than close-to-close HV but ignores overnight gaps and drift.
+
+#### `garman_klass(ohlc, period=20, annualise=True, trading_days=252)` → `pl.Series`
+
+Garman-Klass (1980) estimator — adds an open-to-close drift correction to
+Parkinson.  More efficient but still assumes no overnight gaps.
+
+#### `yang_zhang(ohlc, period=20, annualise=True, trading_days=252)` → `pl.Series`
+
+Yang-Zhang (2000) estimator — accounts for overnight gaps, open jumps, and
+intrabar drift.  The most efficient unbiased OHLC estimator.  Has `period`
+leading nulls (one extra vs. the others, due to the overnight shift).
+
+```python
+# Compare estimators side-by-side
+pk = polarticks.parkinson(df, period=20)
+gk = polarticks.garman_klass(df, period=20)
+yz = polarticks.yang_zhang(df, period=20)
+```
+
+#### `williams_vix_fix(ohlc, period=22)` → `pl.Series`
+
+Synthetic fear gauge — `100 × (rolling_max(close, period) − low) / rolling_max(close, period)`.
+Spikes during sharp selloffs, mimicking the shape of the CBOE VIX without
+requiring options data.
+
+#### `fisher_transform(ohlc, period=9)` → `pl.DataFrame`
+
+Fisher Transform (Ehlers 2002) — normalises the HL midpoint to a near-Gaussian
+distribution via arctanh.  Extreme readings are statistically significant
+turning-point signals.  Returns `fisher` and `fisher_signal` columns.
+
+```python
+ft = polarticks.fisher_transform(df, period=9)
+# ft["fisher"]        — arctanh-normalised price momentum
+# ft["fisher_signal"] — fisher shifted by 1 bar
+```
+
 ---
 
 ## Running tests
 
 ```bash
-uv run pytest tests/unit/       # 467 unit tests
+uv run pytest tests/unit/       # 577 unit tests
 uv run pytest tests/            # all tests (includes benchmarks — takes ~90 s)
 ```
 
