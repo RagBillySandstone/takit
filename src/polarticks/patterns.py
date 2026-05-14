@@ -11,18 +11,20 @@ to confirm a candle as "real" (non-doji).  Adjust to taste.
 
 Functions
 ---------
-is_bullish_engulfing        Bearish candle followed by a larger bullish candle
-is_bearish_engulfing        Bullish candle followed by a larger bearish candle
-is_pin_bar_bullish          Hammer: small body near top, long lower wick
-is_pin_bar_bearish          Shooting star: small body near bottom, long upper wick
-is_inside_bar               Current bar's range is fully contained by the prior bar
-is_doji                     Open ≈ Close (indecision candle)
-is_three_white_soldiers     Three consecutive substantial bullish candles advancing higher
-is_three_black_crows        Three consecutive substantial bearish candles declining lower
-is_morning_star             Three-candle bullish reversal with a small star in the middle
-is_evening_star             Three-candle bearish reversal with a small star in the middle
-is_bullish_harami           Small bullish body contained within a prior large bearish body
-is_bearish_harami           Small bearish body contained within a prior large bullish body
+is_bullish_engulfing            Bearish candle followed by a larger bullish candle
+is_bearish_engulfing            Bullish candle followed by a larger bearish candle
+is_pin_bar_bullish              Hammer: small body near top, long lower wick
+is_pin_bar_bearish              Shooting star: small body near bottom, long upper wick
+is_inside_bar                   Current bar's range is fully contained by the prior bar
+is_doji                         Open ≈ Close (indecision candle)
+is_three_white_soldiers         Three consecutive substantial bullish candles advancing higher
+is_three_black_crows            Three consecutive substantial bearish candles declining lower
+is_morning_star                 Three-candle bullish reversal with a small star in the middle
+is_evening_star                 Three-candle bearish reversal with a small star in the middle
+is_bullish_harami               Small bullish body contained within a prior large bearish body
+is_bearish_harami               Small bearish body contained within a prior large bullish body
+is_abandoned_baby_bullish       Gap-down doji between a bearish and a bullish bar (bottom reversal)
+is_abandoned_baby_bearish       Gap-up doji between a bullish and a bearish bar (top reversal)
 """
 
 from __future__ import annotations
@@ -647,3 +649,112 @@ def is_bearish_harami(ohlc: pl.DataFrame) -> pl.Series:
     body_contained = (ohlc["close"] >= prev_open) & (ohlc["open"] <= prev_close)
 
     return (prior_bullish & curr_bearish & body_contained).fill_null(False).alias("bearish_harami")
+
+
+# ---------------------------------------------------------------------------
+# Abandoned Baby
+# ---------------------------------------------------------------------------
+
+
+def is_abandoned_baby_bullish(
+    ohlc: pl.DataFrame,
+    body_ratio: float = 0.3,
+    doji_ratio: float = 0.1,
+) -> pl.Series:
+    """Detect bullish abandoned baby — gap-reversal three-candle bottom pattern.
+
+    The bullish abandoned baby signals a potential bottom reversal when a doji
+    "abandons" both neighbouring candles via strict price gaps:
+
+        Bar 1 (i-2): Large bearish candle (body ≥ ``body_ratio`` × range).
+        Bar 2 (i-1): Doji (body ≤ ``doji_ratio`` × range) with a full gap
+                     *below* Bar 1 — Bar 2's high is strictly below Bar 1's low.
+        Bar 3 (i):   Large bullish candle with a full gap *above* Bar 2 —
+                     Bar 3's low is strictly above Bar 2's high.
+
+    Both gaps must be strict (no price overlap) for the pattern to qualify.
+
+    Args:
+        ohlc: DataFrame with columns ``open``, ``high``, ``low``, ``close``.
+        body_ratio: Minimum body-to-range ratio for Bars 1 and 3 (default 0.3).
+        doji_ratio: Maximum body-to-range ratio for the doji Bar 2 (default 0.1).
+
+    Returns:
+        Boolean Series, ``True`` on Bar 3 (the confirming candle).
+        The first two bars are always ``False``.
+    """
+    open_ = ohlc["open"]
+    high = ohlc["high"]
+    low = ohlc["low"]
+    close = ohlc["close"]
+
+    open_2, high_2, low_2, close_2 = open_.shift(2), high.shift(2), low.shift(2), close.shift(2)
+    open_1, high_1, low_1, close_1 = open_.shift(1), high.shift(1), low.shift(1), close.shift(1)
+
+    # Bar 1: large bearish candle.
+    bar1_bearish = (close_2 < open_2) & (
+        _body_range_ratio(open_2, close_2, high_2, low_2) >= body_ratio
+    )
+
+    # Bar 2: doji with a strict gap below Bar 1 (no overlap between the two bars).
+    bar2_doji = _body_range_ratio(open_1, close_1, high_1, low_1) <= doji_ratio
+    gap_down_from_bar1 = high_1 < low_2  # Bar 2's high is strictly below Bar 1's low
+
+    # Bar 3: large bullish candle with a strict gap above Bar 2.
+    bar3_bullish = (close > open_) & (_body_range_ratio(open_, close, high, low) >= body_ratio)
+    gap_up_from_bar2 = low > high_1  # Bar 3's low is strictly above Bar 2's high
+
+    result = bar1_bearish & bar2_doji & gap_down_from_bar1 & bar3_bullish & gap_up_from_bar2
+    return result.fill_null(False).alias("abandoned_baby_bullish")
+
+
+def is_abandoned_baby_bearish(
+    ohlc: pl.DataFrame,
+    body_ratio: float = 0.3,
+    doji_ratio: float = 0.1,
+) -> pl.Series:
+    """Detect bearish abandoned baby — gap-reversal three-candle top pattern.
+
+    The bearish abandoned baby signals a potential top reversal when a doji
+    "abandons" both neighbouring candles via strict price gaps:
+
+        Bar 1 (i-2): Large bullish candle (body ≥ ``body_ratio`` × range).
+        Bar 2 (i-1): Doji (body ≤ ``doji_ratio`` × range) with a full gap
+                     *above* Bar 1 — Bar 2's low is strictly above Bar 1's high.
+        Bar 3 (i):   Large bearish candle with a full gap *below* Bar 2 —
+                     Bar 3's high is strictly below Bar 2's low.
+
+    Both gaps must be strict (no price overlap) for the pattern to qualify.
+
+    Args:
+        ohlc: DataFrame with columns ``open``, ``high``, ``low``, ``close``.
+        body_ratio: Minimum body-to-range ratio for Bars 1 and 3 (default 0.3).
+        doji_ratio: Maximum body-to-range ratio for the doji Bar 2 (default 0.1).
+
+    Returns:
+        Boolean Series, ``True`` on Bar 3 (the confirming candle).
+        The first two bars are always ``False``.
+    """
+    open_ = ohlc["open"]
+    high = ohlc["high"]
+    low = ohlc["low"]
+    close = ohlc["close"]
+
+    open_2, high_2, low_2, close_2 = open_.shift(2), high.shift(2), low.shift(2), close.shift(2)
+    open_1, high_1, low_1, close_1 = open_.shift(1), high.shift(1), low.shift(1), close.shift(1)
+
+    # Bar 1: large bullish candle.
+    bar1_bullish = (close_2 > open_2) & (
+        _body_range_ratio(open_2, close_2, high_2, low_2) >= body_ratio
+    )
+
+    # Bar 2: doji with a strict gap above Bar 1.
+    bar2_doji = _body_range_ratio(open_1, close_1, high_1, low_1) <= doji_ratio
+    gap_up_from_bar1 = low_1 > high_2  # Bar 2's low is strictly above Bar 1's high
+
+    # Bar 3: large bearish candle with a strict gap below Bar 2.
+    bar3_bearish = (close < open_) & (_body_range_ratio(open_, close, high, low) >= body_ratio)
+    gap_down_from_bar2 = high < low_1  # Bar 3's high is strictly below Bar 2's low
+
+    result = bar1_bullish & bar2_doji & gap_up_from_bar1 & bar3_bearish & gap_down_from_bar2
+    return result.fill_null(False).alias("abandoned_baby_bearish")
