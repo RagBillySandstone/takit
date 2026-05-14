@@ -1,4 +1,4 @@
-"""Performance benchmarks for all takit indicators.
+"""Performance benchmarks for all polarticks indicators.
 
 Run with::
 

@@ -1,4 +1,4 @@
-"""Shared validation helpers for takit indicators."""
+"""Shared validation helpers for polarticks indicators."""
 
 from __future__ import annotations
 
