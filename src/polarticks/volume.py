@@ -3,13 +3,16 @@ Volume and price-volume indicators.
 
 Functions
 ---------
-vwap        Session-anchored Volume Weighted Average Price
-vwap_bands  VWAP with ±1σ / ±2σ standard-deviation bands
-obv         On-Balance Volume (running signed cumulative volume)
-ad_line     Accumulation/Distribution Line (volume-weighted cumulative flow)
-kvo         Klinger Volume Oscillator (trend-aligned cumulative volume force)
-eom         Ease of Movement (price change relative to volume pressure)
-pvt         Price Volume Trend (cumulative volume scaled by % price change)
+vwap         Session-anchored Volume Weighted Average Price
+vwap_bands   VWAP with ±1σ / ±2σ standard-deviation bands
+obv          On-Balance Volume (running signed cumulative volume)
+ad_line      Accumulation/Distribution Line (volume-weighted cumulative flow)
+kvo          Klinger Volume Oscillator (trend-aligned cumulative volume force)
+eom          Ease of Movement (price change relative to volume pressure)
+pvt          Price Volume Trend (cumulative volume scaled by % price change)
+force_index  Elder's Force Index — EMA of signed price-change × volume
+nvi          Negative Volume Index — cumulates price change on falling-volume days
+pvi          Positive Volume Index — cumulates price change on rising-volume days
 """
 
 from __future__ import annotations
@@ -478,3 +481,144 @@ def pvt(ohlc_vol: pl.DataFrame) -> pl.Series:
     pct_change = ((close - prev_close) / prev_close).fill_nan(0.0)
     # Bar 0: prev_close is null → pct_change is null → treat as zero so PVT starts at 0.
     return (volume * pct_change.fill_null(0.0)).cum_sum().alias("pvt")
+
+
+# ---------------------------------------------------------------------------
+# Force Index
+# ---------------------------------------------------------------------------
+
+
+def force_index(ohlc_vol: pl.DataFrame, period: int = 13) -> pl.Series:
+    """Elder's Force Index — EMA-smoothed signed price-change times volume.
+
+    The Force Index (Dr Alexander Elder) measures the power behind a price
+    move by combining direction (close − previous close), magnitude, and
+    volume.  Positive values indicate buying force; negative values indicate
+    selling force.  The EMA smoothing filters out single-bar noise.
+
+    Algorithm:
+        raw_force[t]  = (close[t] − close[t-1]) × volume[t]
+        force_index[t] = EMA(raw_force, period)
+
+    The raw force for bar 0 is treated as zero (no prior close exists).
+    Null-prefix: ``period − 1`` bars (from the EMA warm-up).
+
+    Args:
+        ohlc_vol: DataFrame with columns ``close`` and ``volume``.
+        period: EMA smoothing period (default 13; use 2 for a faster signal).
+
+    Returns:
+        Series named ``force_index_{period}``.
+
+    Raises:
+        ValueError: If ``period < 1``.
+    """
+    _validate_period(period, "Force Index")
+
+    close = ohlc_vol["close"]
+    volume = ohlc_vol["volume"].cast(pl.Float64)
+
+    # Bar 0 has no prior close; fill null to zero so the EMA seeds cleanly.
+    raw = ((close - close.shift(1)) * volume).fill_null(0.0)
+
+    return ema(raw, period).alias(f"force_index_{period}")
+
+
+# ---------------------------------------------------------------------------
+# Negative Volume Index
+# ---------------------------------------------------------------------------
+
+
+def nvi(ohlc_vol: pl.DataFrame) -> pl.Series:
+    """Negative Volume Index (NVI) — cumulates price change on falling-volume bars.
+
+    The NVI (Paul Dysart, popularised by Norman Fosback) is based on the
+    premise that the "smart money" (informed traders) tends to be active on
+    low-volume days.  The index only moves when volume is lower than the
+    prior bar; on rising-volume days the index is unchanged.
+
+    Algorithm:
+        NVI[0] = 1000
+        If volume[t] < volume[t-1]:
+            NVI[t] = NVI[t-1] × (1 + (close[t] − close[t-1]) / close[t-1])
+        Else:
+            NVI[t] = NVI[t-1]
+
+    No leading nulls — the index is defined for every bar from bar 0.
+
+    Args:
+        ohlc_vol: DataFrame with columns ``close`` and ``volume``.
+
+    Returns:
+        Series named ``nvi`` (dtype Float64), starting at 1000.
+    """
+    close_list = ohlc_vol["close"].to_list()
+    vol_list = ohlc_vol["volume"].cast(pl.Float64).to_list()
+    n = len(close_list)
+
+    result: list[float] = [1000.0] * n
+
+    for i in range(1, n):
+        c, pc = close_list[i], close_list[i - 1]
+        v, pv = vol_list[i], vol_list[i - 1]
+
+        # Skip bars with missing data; carry the prior value forward.
+        if c is None or pc is None or v is None or pv is None or pc == 0.0:
+            result[i] = result[i - 1]
+        elif v < pv:
+            # Volume fell: accumulate price change.
+            result[i] = result[i - 1] * (1.0 + (c - pc) / pc)
+        else:
+            result[i] = result[i - 1]
+
+    return pl.Series("nvi", result, dtype=pl.Float64)
+
+
+# ---------------------------------------------------------------------------
+# Positive Volume Index
+# ---------------------------------------------------------------------------
+
+
+def pvi(ohlc_vol: pl.DataFrame) -> pl.Series:
+    """Positive Volume Index (PVI) — cumulates price change on rising-volume bars.
+
+    The PVI (Paul Dysart) mirrors the NVI: it tracks what the "crowd" (less
+    informed, momentum-driven traders) does on high-volume days.  The index
+    only moves when volume is higher than the prior bar; it is unchanged on
+    falling-volume days.
+
+    Algorithm:
+        PVI[0] = 1000
+        If volume[t] > volume[t-1]:
+            PVI[t] = PVI[t-1] × (1 + (close[t] − close[t-1]) / close[t-1])
+        Else:
+            PVI[t] = PVI[t-1]
+
+    No leading nulls — the index is defined for every bar from bar 0.
+
+    Args:
+        ohlc_vol: DataFrame with columns ``close`` and ``volume``.
+
+    Returns:
+        Series named ``pvi`` (dtype Float64), starting at 1000.
+    """
+    close_list = ohlc_vol["close"].to_list()
+    vol_list = ohlc_vol["volume"].cast(pl.Float64).to_list()
+    n = len(close_list)
+
+    result: list[float] = [1000.0] * n
+
+    for i in range(1, n):
+        c, pc = close_list[i], close_list[i - 1]
+        v, pv = vol_list[i], vol_list[i - 1]
+
+        # Skip bars with missing data; carry the prior value forward.
+        if c is None or pc is None or v is None or pv is None or pc == 0.0:
+            result[i] = result[i - 1]
+        elif v > pv:
+            # Volume rose: accumulate price change.
+            result[i] = result[i - 1] * (1.0 + (c - pc) / pc)
+        else:
+            result[i] = result[i - 1]
+
+    return pl.Series("pvi", result, dtype=pl.Float64)
