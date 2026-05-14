@@ -19,6 +19,10 @@ mfi                 Money Flow Index (volume-weighted RSI)
 cmf                 Chaikin Money Flow
 tsi                 True Strength Index (double-smoothed momentum)
 ultimate_oscillator Weighted blend of three time-frame oscillators
+cmo                 Chande Momentum Oscillator (net momentum as % of total movement)
+dpo                 Detrended Price Oscillator (removes trend to isolate price cycles)
+kst                 Know Sure Thing (weighted sum of four smoothed ROC oscillators)
+coppock             Coppock Curve (WMA of combined ROC; long-term bottom detector)
 """
 
 from __future__ import annotations
@@ -26,7 +30,7 @@ from __future__ import annotations
 import polars as pl
 
 from polarticks._validate import _validate_period
-from polarticks.moving_averages import ema, sma, wilder_smooth
+from polarticks.moving_averages import ema, sma, wilder_smooth, wma
 
 # ---------------------------------------------------------------------------
 # RSI
@@ -628,3 +632,187 @@ def ppo(
     return pl.DataFrame(
         {"ppo_line": ppo_line, "ppo_signal": signal_line, "ppo_histogram": histogram}
     )
+
+
+# ---------------------------------------------------------------------------
+# CMO
+# ---------------------------------------------------------------------------
+
+
+def cmo(series: pl.Series, period: int = 14) -> pl.Series:
+    """Chande Momentum Oscillator — net momentum as a percentage of total movement.
+
+    CMO compares the sum of up-moves against total price movement (up + down)
+    over the lookback period.  It oscillates between −100 (all down) and
+    +100 (all up).  Unlike RSI, it does not smooth the gains/losses — the
+    raw daily deltas are used directly.
+
+    Algorithm:
+        delta    = price.diff(1)
+        sum_up   = Σ max(delta, 0)  over *period* bars
+        sum_down = Σ max(−delta, 0) over *period* bars
+        CMO      = 100 × (sum_up − sum_down) / (sum_up + sum_down)
+
+    Null-prefix: ``period`` bars (diff contributes 1; rolling sum adds period − 1).
+
+    Args:
+        series: Input price series (e.g., close).
+        period: Lookback window for the rolling sums (default 14).
+
+    Returns:
+        Series of CMO values in (−100, +100).
+        The first ``period`` values are ``null``.
+
+    Raises:
+        ValueError: If ``period < 1``.
+    """
+    _validate_period(period, "CMO")
+
+    delta = series.diff(1)
+    sum_up = delta.clip(lower_bound=0.0).rolling_sum(window_size=period, min_samples=period)
+    sum_down = (-delta).clip(lower_bound=0.0).rolling_sum(window_size=period, min_samples=period)
+
+    # fill_nan handles the degenerate case where all bars are flat (denominator = 0).
+    result = (100.0 * (sum_up - sum_down) / (sum_up + sum_down)).fill_nan(None)
+    return result.alias(f"cmo_{period}")
+
+
+# ---------------------------------------------------------------------------
+# DPO
+# ---------------------------------------------------------------------------
+
+
+def dpo(series: pl.Series, period: int = 20) -> pl.Series:
+    """Detrended Price Oscillator — isolates short-term price cycles.
+
+    DPO removes the dominant trend by subtracting a displaced SMA from the
+    current price.  The SMA is shifted back by ``period // 2 + 1`` bars so
+    it represents the "centre of gravity" of the lookback window rather than
+    a trailing average.  The result oscillates around zero; peaks and troughs
+    correspond to cyclical highs and lows.
+
+    Algorithm:
+        displacement = period // 2 + 1
+        DPO[t]       = price[t] − SMA(price, period)[t − displacement]
+
+    Null-prefix: ``(period − 1) + displacement`` bars.
+
+    Args:
+        series: Input price series (e.g., close).
+        period: SMA lookback period (default 20).
+
+    Returns:
+        Series of DPO values.
+        The first ``(period − 1) + period // 2 + 1`` values are ``null``.
+
+    Raises:
+        ValueError: If ``period < 1``.
+    """
+    _validate_period(period, "DPO")
+
+    displacement = period // 2 + 1
+    # shift(displacement) moves the SMA back in time so the current price is
+    # compared against a centred historical average rather than a trailing one.
+    displaced_sma = sma(series, period).shift(displacement)
+    return (series - displaced_sma).alias(f"dpo_{period}")
+
+
+# ---------------------------------------------------------------------------
+# KST
+# ---------------------------------------------------------------------------
+
+
+def kst(
+    series: pl.Series,
+    roc1: int = 10,
+    roc2: int = 13,
+    roc3: int = 14,
+    roc4: int = 24,
+    sma1: int = 10,
+    sma2: int = 13,
+    sma3: int = 14,
+    sma4: int = 24,
+    signal: int = 9,
+) -> pl.DataFrame:
+    """Know Sure Thing (KST) — weighted sum of smoothed ROC oscillators.
+
+    KST (Martin Pring, 1992) sums four Rate-of-Change series — each smoothed
+    with an SMA — at progressively longer time-frames, weighted so that longer
+    cycles contribute more.  It is designed to identify major trend changes.
+
+    Algorithm:
+        RCMA_k[t] = SMA(ROC(price, roc_k), sma_k)
+        KST[t]    = 1·RCMA_1 + 2·RCMA_2 + 3·RCMA_3 + 4·RCMA_4
+        signal[t] = SMA(KST, signal)
+
+    Default daily parameters (Pring 1992):
+        roc1/sma1 = 10/10, roc2/sma2 = 13/13, roc3/sma3 = 14/14, roc4/sma4 = 24/24
+
+    Null-prefix for ``kst_line``:   ``roc4 + sma4 − 1`` bars (slowest component).
+    Null-prefix for ``kst_signal``: kst_line nulls + ``signal − 1`` bars.
+
+    Args:
+        series: Close price series.
+        roc1..roc4: ROC lookback periods (default 10, 13, 14, 24).
+        sma1..sma4: SMA smoothing periods applied to each ROC (default 10, 13, 14, 24).
+        signal: SMA period for the signal line (default 9).
+
+    Returns:
+        DataFrame with columns ``kst_line`` and ``kst_signal``.
+    """
+    # Build four smoothed ROC components with increasing weights.
+    rcma1 = sma(roc(series, roc1), sma1)
+    rcma2 = sma(roc(series, roc2), sma2) * 2.0
+    rcma3 = sma(roc(series, roc3), sma3) * 3.0
+    rcma4 = sma(roc(series, roc4), sma4) * 4.0
+
+    kst_line = (rcma1 + rcma2 + rcma3 + rcma4).alias("kst_line")
+    kst_signal = sma(kst_line, signal).alias("kst_signal")
+
+    return pl.DataFrame({"kst_line": kst_line, "kst_signal": kst_signal})
+
+
+# ---------------------------------------------------------------------------
+# Coppock Curve
+# ---------------------------------------------------------------------------
+
+
+def coppock(
+    series: pl.Series,
+    long_roc: int = 14,
+    short_roc: int = 11,
+    wma_period: int = 10,
+) -> pl.Series:
+    """Coppock Curve — long-term momentum oscillator for major market bottoms.
+
+    The Coppock Curve (Edwin Coppock, 1962) adds two ROC values at different
+    time-frames and smooths the result with a Weighted Moving Average.
+    Originally designed on monthly data to identify buying opportunities after
+    major bear markets; a cross from negative to positive is the buy signal.
+
+    Algorithm:
+        Coppock = WMA(ROC(price, long_roc) + ROC(price, short_roc), wma_period)
+
+    Null-prefix: ``long_roc + wma_period − 1`` bars
+        (long_roc nulls from the slower ROC; wma_period − 1 from the WMA).
+
+    Args:
+        series: Close price series.
+        long_roc: Longer ROC period (default 14).
+        short_roc: Shorter ROC period (default 11).
+        wma_period: WMA smoothing period (default 10).
+
+    Returns:
+        Series named ``coppock``.
+
+    Raises:
+        ValueError: If any period < 1.
+    """
+    _validate_period(long_roc, "Coppock long_roc")
+    _validate_period(short_roc, "Coppock short_roc")
+    _validate_period(wma_period, "Coppock wma_period")
+
+    r1 = roc(series, long_roc)
+    r2 = roc(series, short_roc)
+    # WMA of the sum of both ROCs; null propagation handles the warm-up span.
+    return wma(r1 + r2, wma_period).alias("coppock")
