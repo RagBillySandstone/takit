@@ -122,6 +122,13 @@ class TestKAMA:
         result = kama(CLOSE, period=10)
         assert result.name == "kama_10"
 
+    def test_null_at_seed_returns_all_null(self) -> None:
+        """When the value at index period-1 is null, KAMA returns all nulls early."""
+        # Series where leading nulls extend into the seed position (index period-1=3).
+        s = pl.Series([None, None, None, None, 5.0], dtype=pl.Float64)
+        result = kama(s, period=4)
+        assert all(v is None for v in result.to_list())
+
 
 # ---------------------------------------------------------------------------
 # TRIX

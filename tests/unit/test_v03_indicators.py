@@ -434,6 +434,37 @@ class TestNVI:
     def test_output_name(self) -> None:
         assert nvi(OHLCV).name == "nvi"
 
+    def test_null_bar_carries_forward(self) -> None:
+        """A bar with null OHLCV data must carry the prior NVI value forward."""
+        df = pl.DataFrame(
+            {
+                "open": [10.0, 12.0, None, 13.0],
+                "high": [11.0, 13.0, None, 14.0],
+                "low": [9.0, 11.0, None, 12.0],
+                "close": [10.0, 12.0, None, 13.0],
+                "volume": [100.0, 200.0, None, 50.0],
+            }
+        )
+        result = nvi(df).to_list()
+        # bar 2 is null → carries bar 1's value; bar 3 has volume 50 < 200 → updates.
+        assert result[2] == pytest.approx(result[1])
+
+    def test_zero_prev_close_carries_forward(self) -> None:
+        """A zero prev_close must not cause division by zero — value carries forward."""
+        df = pl.DataFrame(
+            {
+                "open": [0.0, 1.0, 2.0],
+                "high": [0.5, 1.5, 2.5],
+                "low": [0.0, 0.5, 1.5],
+                "close": [0.0, 1.0, 2.0],
+                # volume falls at bar 1 so NVI would normally update, but prev_close=0
+                "volume": [100.0, 50.0, 150.0],
+            }
+        )
+        result = nvi(df).to_list()
+        # bar 0 → 1000.0 (seed); bar 1: prev_close=0 → guard fires → carry forward.
+        assert result[1] == pytest.approx(result[0])
+
 
 # ---------------------------------------------------------------------------
 # PVI
@@ -475,6 +506,37 @@ class TestPVI:
 
     def test_output_name(self) -> None:
         assert pvi(OHLCV).name == "pvi"
+
+    def test_null_bar_carries_forward(self) -> None:
+        """A bar with null OHLCV data must carry the prior PVI value forward."""
+        df = pl.DataFrame(
+            {
+                "open": [10.0, 12.0, None, 13.0],
+                "high": [11.0, 13.0, None, 14.0],
+                "low": [9.0, 11.0, None, 12.0],
+                "close": [10.0, 12.0, None, 13.0],
+                "volume": [100.0, 200.0, None, 50.0],
+            }
+        )
+        result = pvi(df).to_list()
+        # bar 2 is null → carries bar 1's value.
+        assert result[2] == pytest.approx(result[1])
+
+    def test_zero_prev_close_carries_forward(self) -> None:
+        """A zero prev_close must not cause division by zero — value carries forward."""
+        df = pl.DataFrame(
+            {
+                "open": [0.0, 1.0, 2.0],
+                "high": [0.5, 1.5, 2.5],
+                "low": [0.0, 0.5, 1.5],
+                "close": [0.0, 1.0, 2.0],
+                # volume rises at bar 1 so PVI would normally update, but prev_close=0
+                "volume": [100.0, 200.0, 50.0],
+            }
+        )
+        result = pvi(df).to_list()
+        # bar 0 → 1000.0 (seed); bar 1: prev_close=0 → guard fires → carry forward.
+        assert result[1] == pytest.approx(result[0])
 
     def test_nvi_pvi_diverge(self) -> None:
         """NVI and PVI cannot be numerically identical except by coincidence."""

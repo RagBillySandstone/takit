@@ -51,6 +51,13 @@ class TestSMA:
         with pytest.raises(ValueError):
             sma(PRICES, 0)
 
+    def test_period_exceeds_series_length_returns_all_null(self) -> None:
+        """When period > len(series), rolling_mean produces all nulls gracefully."""
+        short = pl.Series([1.0, 2.0, 3.0])
+        result = sma(short, period=10)
+        assert len(result) == 3
+        assert all(v is None for v in result.to_list())
+
 
 class TestEMA:
     def test_warm_up_is_null(self) -> None:

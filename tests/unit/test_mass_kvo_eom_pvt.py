@@ -113,6 +113,24 @@ class TestKVO:
         with pytest.raises(ValueError):
             kvo(_DF, fast=0, slow=10, signal=3)
 
+    def test_embedded_nulls_are_skipped(self) -> None:
+        """Bars with any null OHLCV value must be skipped without crashing."""
+        # Inject a null bar at index 2 — the loop's null-guard should continue past it.
+        df = _DF.clone()
+        null_bar = pl.DataFrame(
+            {
+                "open": [None],
+                "high": [None],
+                "low": [None],
+                "close": [None],
+                "volume": [None],
+            }
+        )
+        df_with_null = pl.concat([df[:2], null_bar.cast(df.schema), df[3:]])
+        result = kvo(df_with_null, fast=5, slow=10, signal=3)
+        assert len(result) == _N
+        assert set(result.columns) == {"kvo_line", "kvo_signal"}
+
 
 # ---------------------------------------------------------------------------
 # Ease of Movement
