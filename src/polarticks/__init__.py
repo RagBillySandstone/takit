@@ -51,6 +51,7 @@ from polarticks.moving_averages import (
     t3,
     tema,
     trix,
+    var_mov_avg,
     vwma,
     wilder_smooth,
     wma,
@@ -128,6 +129,7 @@ __all__ = [
     "zlema",
     "t3",
     "alma",
+    "var_mov_avg",
     # Momentum
     "rsi",
     "macd",

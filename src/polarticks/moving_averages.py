@@ -21,6 +21,7 @@ trix              Triple-smoothed EMA oscillator with signal line
 zlema             Zero Lag EMA                (lag-corrected via error-correction term)
 t3                Tillson T3                  (triple GD expansion; low-lag, smooth)
 alma              Arnaud Legoux Moving Average (Gaussian-weighted rolling mean)
+var_mov_avg       Variable Moving Average     (signal/noise ER-adaptive smoothing)
 """
 
 from __future__ import annotations
@@ -675,3 +676,105 @@ def alma(
         (series.shift(period - 1 - i) * norm_weights[i] for i in range(period)),
     )
     return weighted.alias(f"alma_{period}")
+
+
+# ---------------------------------------------------------------------------
+# VarMovAvg
+# ---------------------------------------------------------------------------
+
+
+def var_mov_avg(
+    series: pl.Series,
+    period: int = 50,
+    nfast: int = 15,
+    nslow: int = 10,
+    g: float = 1.0,
+) -> pl.Series:
+    """Variable Moving Average — signal/noise Efficiency Ratio adaptive MA.
+
+    VarMovAvg self-adjusts its smoothing speed by computing an Efficiency Ratio
+    (ER) that compares the net price movement (signal) against the total path
+    length (noise) over ``period`` bars.  The resulting smoothing constant (SSC)
+    is raised to the power ``g`` before being applied, allowing the user to
+    amplify or dampen the adaptive effect.
+
+    Based on Var_Mov_Avg3.mq4 by GOODMAN & Mstera & AF, as published by
+    EarnForex (https://github.com/EarnForex/VarMovAvg).
+
+    Algorithm:
+        abs_diff[t]  = |price[t] − price[t−1]|
+        noise[t]     = Σ abs_diff over [t−period+1, t]  (+ ε to prevent /0)
+        signal[t]    = |price[t] − price[t−period]|
+        ER[t]        = signal[t] / noise[t]
+        slow_sc      = 2 / (nslow + 1)
+        fast_sc      = 2 / (nfast + 1)
+        SSC[t]       = ER[t] × (fast_sc − slow_sc) + slow_sc
+        VMA[t]       = VMA[t−1] + SSC[t]^G × (price[t] − VMA[t−1])
+
+    Seeding: VMA is seeded at bar ``period`` with the raw price; the first
+    output appears at bar ``period + 1``.  The first ``period + 1`` values
+    are ``null``.
+
+    Note on ``nfast`` / ``nslow`` naming: the original MT4/MT5 indicator uses
+    ``nslow=10`` and ``nfast=15`` as defaults.  With these values
+    ``slow_sc > fast_sc`` and ``fast_sc − slow_sc`` is negative, so ER=1
+    (trending) gives the *smaller* SSC while ER=0 (choppy) gives the larger
+    one.  The difference is mild with these defaults; increasing the gap or
+    ``g`` sharpens the adaptive response.
+
+    Args:
+        series: Input price series (e.g., close).
+        period: Efficiency Ratio lookback window (default 50).
+        nfast: Fast smoothing period used in the SSC floor/ceiling (default 15).
+        nslow: Slow smoothing period used in the SSC floor/ceiling (default 10).
+        g: Power exponent applied to SSC before updating VMA (default 1.0).
+
+    Returns:
+        Series of VarMovAvg values.  The first ``period + 1`` values are
+        ``null``.
+
+    Raises:
+        ValueError: If ``period < 1``, ``nfast < 1``, or ``nslow < 1``.
+    """
+    _validate_period(period, "VarMovAvg")
+    _validate_period(nfast, "VarMovAvg nfast")
+    _validate_period(nslow, "VarMovAvg nslow")
+
+    slow_sc = 2.0 / (nslow + 1)
+    fast_sc = 2.0 / (nfast + 1)
+    dsc = fast_sc - slow_sc
+
+    # Vectorised ER: noise is the rolling sum of bar-to-bar absolute changes;
+    # the epsilon prevents division by zero on perfectly flat price series.
+    abs_diff = (series - series.shift(1)).abs()
+    noise = abs_diff.rolling_sum(window_size=period, min_samples=period) + 1e-9
+    signal = (series - series.shift(period)).abs()
+    ssc_series = signal / noise * dsc + slow_sc
+
+    raw: list[float | None] = series.to_list()
+    ssc_list: list[float | None] = ssc_series.to_list()
+    n = len(raw)
+    output: list[float | None] = [None] * n
+
+    # Seed AMA0 with the raw price at index ``period``; first output is at
+    # index ``period + 1`` (matching the MQL5 reference PlotIndexGetInteger
+    # draw-begin of periodAMA + 2, i.e., first non-null at periodAMA + 1).
+    seed_idx = period + 1
+    if seed_idx >= n or raw[period] is None:
+        return pl.Series(f"var_mov_avg_{period}", output, dtype=pl.Float64)
+
+    ama: float = raw[period]  # type: ignore[assignment]
+
+    for idx in range(seed_idx, n):
+        price = raw[idx]
+        ssc = ssc_list[idx]
+        if price is None or ssc is None:
+            output[idx] = None
+            continue
+        # SSC^g scales the adaptive step; with g=1 this reduces to a standard
+        # SC-weighted update identical to KAMA.
+        ddk = ssc**g * (price - ama)
+        ama = ama + ddk
+        output[idx] = ama
+
+    return pl.Series(f"var_mov_avg_{period}", output, dtype=pl.Float64)

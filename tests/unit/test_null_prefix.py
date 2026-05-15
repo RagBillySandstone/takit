@@ -34,6 +34,7 @@ Expected-null formulas used throughout:
     period - 1          force_index (EMA of raw force)
     period - 1          parkinson, garman_klass, williams_vix_fix
     period              yang_zhang (overnight shift adds 1 extra null)
+    period + 1          var_mov_avg (seeded at period, first output at period+1)
 """
 
 from __future__ import annotations
@@ -882,3 +883,13 @@ class TestWilliamsVixFixNullPrefix:
 
     def test_null_count(self) -> None:
         assert _leading_nulls(polarticks.williams_vix_fix(_DF, _P)) == _P - 1
+
+
+class TestVarMovAvgNullPrefix:
+    """VarMovAvg: seed at period, first output at period+1 → period+1 leading nulls."""
+
+    def test_null_count(self) -> None:
+        assert _leading_nulls(polarticks.var_mov_avg(_CLOSE, _P)) == _P + 1
+
+    def test_no_accidental_zeros(self) -> None:
+        assert _no_accidental_zeros(polarticks.var_mov_avg(_CLOSE, _P), _P + 1)
