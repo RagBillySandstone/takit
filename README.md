@@ -199,6 +199,8 @@ and return a `pl.Series`.
 | `zlema(series, period)` | Zero Lag EMA — lag-corrected via shifted series | `lag + (period−1)` where `lag = (period−1)//2` |
 | `t3(series, period=5, vfactor=0.7)` | Tillson T3 — 6-pass EMA with binomial blend | `6·(period−1)` |
 | `alma(series, period=9, offset=0.85, sigma=6.0)` | Arnaud Legoux MA — Gaussian-weighted | `period − 1` |
+| `frama(series, period=16)` | Fractal Adaptive MA — dimension-driven alpha | `period − 1` |
+| `laguerre(series, gamma=0.8)` | Laguerre Filter — 4-state low-lag smoother | 0 |
 
 ```python
 close  = df["close"]
@@ -381,6 +383,39 @@ crossup = polarticks.crossover(k["kst_line"], k["kst_signal"])
 Coppock Curve — WMA of the sum of two ROC values, originally designed as a
 long-term buy signal for equity indices.  Leading nulls: `long_roc + wma_period − 1`.
 
+#### `awesome_oscillator(ohlc, fast=5, slow=34)` → `pl.Series`
+
+Bill Williams Awesome Oscillator — `SMA(midpoint, fast) − SMA(midpoint, slow)` where
+`midpoint = (high + low) / 2`.  Values above zero are bullish.  `slow − 1` leading nulls.
+
+#### `accelerator_oscillator(ohlc, fast=5, slow=34, signal=5)` → `pl.Series`
+
+Accelerator Oscillator — `AO − SMA(AO, signal)`.  Changes direction before AO,
+providing an earlier signal.  `slow + signal − 2` leading nulls.
+
+#### `smi(ohlc, period=14, smooth1=3, smooth2=3, signal=9)` → `pl.DataFrame`
+
+Stochastic Momentum Index — double-EMA smoothed stochastic oscillator bounded in [−100, +100].
+Returns `smi` and `smi_signal`.
+
+#### `rvi(ohlc, period=10)` → `pl.DataFrame`
+
+Relative Vigor Index — symmetric 4-bar triangular weighted ratio of close-open to high-low,
+smoothed over `period` bars.  Returns `rvi` and `rvi_signal`.
+Leading nulls: `period + 2` (rvi) and `period + 5` (signal).
+
+#### `bop(ohlc, period=14)` → `pl.Series`
+
+Balance of Power — `(close − open) / (high − low)` optionally SMA-smoothed.
+Values near +1 indicate strong buying; near −1 indicate strong selling.
+`period − 1` leading nulls (0 when `period=1`).
+
+#### `qqe(series, rsi_period=14, sf=5, qqe_factor=4.236)` → `pl.DataFrame`
+
+Quantitative Qualitative Estimation — RSI-derived adaptive trailing trend line via
+double Wilder-smoothed ATR bands.  Returns `qqe_line` (trailing stop) and `qqe_fast`
+(smoothed RSI).
+
 ---
 
 ### Volatility
@@ -469,6 +504,24 @@ Mass Index — the rolling sum of the ratio of a single EMA to a double EMA of
 the high-low range.  A "reversal bulge" is traditionally signalled when the
 value rises above 27 then falls back below 26.5.  Leading nulls:
 `2·(ema_period − 1) + (sum_period − 1)`.
+
+#### `choppiness_index(ohlc, period=14)` → `pl.Series`
+
+Choppiness Index — `100 × log10(ΣTR / HL_range) / log10(period)`.  Values near
+100 indicate choppy markets; low values indicate strong trends.  Thresholds:
+>61.8 choppy, <38.2 trending.  `period − 1` leading nulls.
+
+#### `squeeze_momentum(ohlc, length=20, bb_mult=2.0, kc_mult=1.5)` → `pl.DataFrame`
+
+TTM Squeeze — detects Bollinger/Keltner compression and measures breakout momentum
+via a linear-regression histogram.  Returns `sqz_on` (bool), `sqz_off` (bool),
+`sqz_momentum` (float).
+
+#### `volatility_ratio(ohlc, period=14)` → `pl.Series`
+
+Volatility Ratio — `true_range / rolling_max(true_range, period)`.  Values near 1
+signal unusually wide-range breakout bars; values near 0 indicate low-volatility bars.
+`period − 1` leading nulls.
 
 ---
 
@@ -603,6 +656,35 @@ Schaff Trend Cycle — applies a double stochastic to the MACD line for faster
 cycle detection.  Values are clipped to [0, 100]; readings above 75 suggest an
 uptrend and below 25 a downtrend.
 
+#### `alligator(ohlc, jaw_period=13, jaw_offset=8, teeth_period=8, teeth_offset=5, lips_period=5, lips_offset=3)` → `pl.DataFrame`
+
+Bill Williams Alligator — three Wilder-smoothed median-price lines displaced into
+the future.  Returns `jaw`, `teeth`, `lips`.  When `lips > teeth > jaw` the market
+is bullish; intertwined lines indicate a sleeping (choppy) market.
+
+#### `fractal(ohlc)` → `pl.DataFrame`
+
+Williams Fractal — 5-bar pivot high/low detector.  A bearish fractal marks a bar
+whose high is strictly greater than both neighbours; a bullish fractal marks the
+lowest low.  Returns bool columns `fractal_bearish` and `fractal_bullish`.
+
+#### `linreg_channel(series, period=100, num_std=2.0)` → `pl.DataFrame`
+
+Rolling linear regression channel with RMSE-based bands.  Returns `lrc_mid`
+(fitted line at the end of the window), `lrc_upper`, and `lrc_lower`.
+`period − 1` leading nulls.
+
+#### `tsf(series, period=14)` → `pl.Series`
+
+Time Series Forecast — OLS line projected one bar ahead: `linreg_value + slope`.
+`period − 1` leading nulls.
+
+#### `chande_kroll_stop(ohlc, atr_period=10, atr_mult=1.5, stop_period=9)` → `pl.DataFrame`
+
+Two-stage ATR trailing stop.  Returns `cks_long` and `cks_short`.  A close above
+`cks_long` is bullish; a close below `cks_short` is bearish.
+Leading nulls: `atr_period + stop_period − 2`.
+
 #### `elder_ray(ohlc, period=13)` → `pl.DataFrame`
 
 Elder Ray Index — measures market force by splitting it into two components:
@@ -721,6 +803,22 @@ nvi_signal = polarticks.ema(nvi, 255)
 bull_regime = nvi > nvi_signal
 ```
 
+#### `chaikin_osc(ohlcv, fast=3, slow=10)` → `pl.Series`
+
+Chaikin Oscillator — `EMA(AD_Line, fast) − EMA(AD_Line, slow)`.  Measures momentum
+of money flow.  `slow − 1` leading nulls.
+
+#### `volume_oscillator(volume, fast=5, slow=10)` → `pl.Series`
+
+Volume Oscillator — `100 × (EMA(vol, fast) − EMA(vol, slow)) / EMA(vol, slow)`.
+Positive values confirm volume-backed price moves.  `slow − 1` leading nulls.
+
+#### `twap(ohlcv, period=None)` → `pl.Series`
+
+Time-Weighted Average Price of `(high + low + close) / 3`.  With `period=None`
+returns the cumulative mean from bar 0 (0 leading nulls).  With a period, returns
+a rolling SMA (`period − 1` leading nulls).
+
 ---
 
 ### Levels (pivot points)
@@ -806,6 +904,12 @@ cannot satisfy the look-back requirement).
 | `is_inside_bar(ohlc)` | Current bar's range is entirely within the prior bar's range |
 | `is_bullish_harami(ohlc)` | Small bullish body inside a large prior bearish body |
 | `is_bearish_harami(ohlc)` | Small bearish body inside a large prior bullish body |
+| `is_hanging_man(ohlc, wick_ratio=0.6, body_ratio=0.25, trend_period=5)` | Hammer shape after uptrend — potential bearish reversal |
+| `is_inverted_hammer(ohlc, wick_ratio=0.6, body_ratio=0.25, trend_period=5)` | Shooting-star shape after downtrend — potential bullish reversal |
+| `is_tweezer_top(ohlc, tolerance=0.001, body_ratio=0.3)` | Two bars with equal highs — bearish rejection |
+| `is_tweezer_bottom(ohlc, tolerance=0.001, body_ratio=0.3)` | Two bars with equal lows — bullish support |
+| `is_dark_cloud_cover(ohlc, penetration=0.5)` | Bearish bar opens above prior high, closes inside prior body |
+| `is_piercing_line(ohlc, penetration=0.5)` | Bullish bar opens below prior low, closes inside prior body |
 
 #### Three-bar patterns
 
@@ -817,6 +921,13 @@ cannot satisfy the look-back requirement).
 | `is_evening_star(ohlc, body_ratio=0.3, star_body_ratio=0.15)` | Bullish → small star → bearish reversal |
 | `is_abandoned_baby_bullish(ohlc, body_ratio=0.3, doji_ratio=0.1)` | Bearish bar → gapped-down doji → bullish bar with gap up |
 | `is_abandoned_baby_bearish(ohlc, body_ratio=0.3, doji_ratio=0.1)` | Bullish bar → gapped-up doji → bearish bar with gap down |
+
+#### Five-bar patterns
+
+| Function | Description |
+|---|---|
+| `is_rising_three_methods(ohlc, body_ratio=0.3, small_body_ratio=0.3)` | Large bull → 3 small bears → large bull (bullish continuation) |
+| `is_falling_three_methods(ohlc, body_ratio=0.3, small_body_ratio=0.3)` | Large bear → 3 small bulls → large bear (bearish continuation) |
 
 ```python
 # Combine patterns and indicators for a signal
@@ -894,6 +1005,23 @@ rsi_rank = polarticks.percent_rank(polarticks.rsi(df["close"], 14), period=252)
 historically_oversold = rsi_rank < 10   # RSI in bottom decile of past year
 ```
 
+#### `rolling_zscore(series, period)` → `pl.Series`
+
+Rolling Z-score — `(value − rolling_mean) / rolling_std`.  `period − 1` leading nulls.
+Null where the window is constant (zero standard deviation).
+
+#### `rolling_beta(series, benchmark, period)` → `pl.Series`
+
+Rolling OLS beta — sensitivity of the series' log returns to the benchmark.
+Beta > 1: amplified moves; 0 < β < 1: dampened; β < 0: inverse.
+`period` leading nulls (one extra from the log-return diff).
+
+#### `hurst_exponent(series, period=100)` → `pl.Series`
+
+Rolling Hurst Exponent via rescaled range (R/S) analysis.  H > 0.5 indicates a
+trending regime; H = 0.5 a random walk; H < 0.5 mean-reversion.
+`period` leading nulls.  Requires `period ≥ 10`.
+
 ---
 
 ### New volatility estimators (v0.3.0)
@@ -947,7 +1075,7 @@ ft = polarticks.fisher_transform(df, period=9)
 ## Running tests
 
 ```bash
-uv run pytest tests/unit/       # 577 unit tests
+uv run pytest tests/unit/       # 803 unit tests
 uv run pytest tests/            # all tests (includes benchmarks — takes ~90 s)
 ```
 

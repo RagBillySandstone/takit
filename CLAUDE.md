@@ -33,16 +33,16 @@ uv run mypy src/
 
 | Module | Contents |
 |---|---|
-| `moving_averages.py` | SMA, EMA, WMA, Wilder, DEMA, TEMA, HMA, VWMA, McGinley Dynamic |
-| `momentum.py` | RSI, MACD, Stochastic, Williams %R, CCI, ROC, MFI, CMF, TSI, Ultimate Oscillator |
-| `volatility.py` | True Range, ATR, Bollinger Bands, Keltner, Chaikin Volatility, Historical Volatility, Ulcer Index |
-| `trend.py` | Donchian Channels, ADX, Supertrend, Parabolic SAR |
-| `volume.py` | OBV, VWAP, VWAP Bands |
-| `levels.py` | Pivot Points (Floor, Camarilla, Fibonacci, Woodie, Demark) |
-| `patterns.py` | 12 candlestick pattern detectors |
-| `utils.py` | crossover, crossunder, log_returns, simple_returns |
+| `moving_averages.py` | SMA, EMA, WMA, Wilder, DEMA, TEMA, HMA, VWMA, McGinley Dynamic, KAMA, TRIX, ZLEMA, T3, ALMA, FRAMA, Laguerre |
+| `momentum.py` | RSI, MACD, Stochastic, Williams %R, CCI, ROC, MFI, CMF, TSI, Ultimate Oscillator, PPO, CMO, DPO, KST, Coppock, Fisher Transform, SMI, RVI, BOP, QQE, Awesome Oscillator, Accelerator Oscillator |
+| `volatility.py` | True Range, ATR, Bollinger Bands, Keltner, Chaikin Volatility, Historical Volatility, Ulcer Index, NATR, Chandelier Exit, Mass Index, Parkinson, Garman-Klass, Yang-Zhang, Williams VIX Fix, Choppiness Index, Squeeze Momentum, Volatility Ratio |
+| `trend.py` | Donchian Channels, ADX, Supertrend, Parabolic SAR, Aroon, Vortex, Ichimoku, LinReg Slope, STC, Elder Ray, Alligator, Fractal, LinReg Channel, TSF, Chande Kroll Stop |
+| `volume.py` | OBV, VWAP, VWAP Bands, KVO, EOM, PVT, Force Index, NVI, PVI, AD Line, Chaikin Oscillator, Volume Oscillator, TWAP |
+| `levels.py` | Pivot Points (Floor, Camarilla, Fibonacci, Woodie, Demark), Fibonacci Retracement |
+| `patterns.py` | 20 candlestick pattern detectors (single-, two-, three-, and five-bar) |
+| `utils.py` | crossover, crossunder, log_returns, simple_returns, rolling_highest, rolling_lowest, rolling_std, percent_rank, rolling_zscore, rolling_beta, hurst_exponent |
 
-All 45+ public functions are re-exported from `src/polarticks/__init__.py` via `__all__`.
+All 75+ public functions are re-exported from `src/polarticks/__init__.py` via `__all__`.
 
 ## Indicator Implementation Patterns
 
@@ -71,11 +71,11 @@ return pl.DataFrame({"macd_line": macd_line, "macd_signal": signal_line, "macd_h
 
 **4. Candlestick patterns** — accept `pl.DataFrame` with OHLC columns, return `pl.Series[bool]`. Always `.fill_null(False)` on the first bar where no prior exists.
 
-**5. Stateful/iterative** — only `mcginley_dynamic` uses a Python loop (seeds from SMA, then recursively updates). All other indicators are fully vectorised.
+**5. Stateful/iterative** — `mcginley_dynamic`, `frama`, `laguerre`, and `qqe` use Python loops (seed from a rolling calculation, then recursively update state). All other indicators are fully vectorised.
 
 ## Null-Prefix Contract
 
-Every indicator produces exactly `period - 1` leading nulls (or the documented equivalent for multi-pass indicators). This is a core invariant tested exhaustively in `tests/unit/test_null_prefix.py` (44 tests). When adding indicators:
+Every indicator produces exactly `period - 1` leading nulls (or the documented equivalent for multi-pass indicators). This is a core invariant tested exhaustively in `tests/unit/test_null_prefix.py` (121 tests). When adding indicators:
 - Use `min_samples=period` on Polars rolling methods to enforce this.
 - Never fill warm-up nulls with zeros — they must remain null.
 - Diff-based indicators (ROC, RSI) produce `period` nulls (one extra from the diff).
