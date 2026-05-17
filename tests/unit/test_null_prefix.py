@@ -893,3 +893,176 @@ class TestVarMovAvgNullPrefix:
 
     def test_no_accidental_zeros(self) -> None:
         assert _no_accidental_zeros(polarticks.var_mov_avg(_CLOSE, _P), _P + 1)
+
+
+# ---------------------------------------------------------------------------
+# v0.4.0 indicators
+# ---------------------------------------------------------------------------
+
+
+class TestFRAMANullPrefix:
+    """FRAMA: seeds at period bar → period-1 leading nulls."""
+
+    def test_null_count(self) -> None:
+        assert _leading_nulls(polarticks.frama(_CLOSE, 16)) == 15
+
+    def test_no_accidental_zeros(self) -> None:
+        assert _no_accidental_zeros(polarticks.frama(_CLOSE, 16), 15)
+
+
+class TestLaguerreNullPrefix:
+    """Laguerre: no formal null prefix → 0 leading nulls."""
+
+    def test_null_count(self) -> None:
+        assert _leading_nulls(polarticks.laguerre(_CLOSE, 0.8)) == 0
+
+
+class TestAwesomeOscillatorNullPrefix:
+    """Awesome Oscillator: slow SMA dominates → slow-1 leading nulls."""
+
+    def test_null_count(self) -> None:
+        assert _leading_nulls(polarticks.awesome_oscillator(_DF, fast=5, slow=10)) == 9
+
+
+class TestAcceleratorOscillatorNullPrefix:
+    """Accelerator Oscillator: slow + signal - 2 leading nulls."""
+
+    def test_null_count(self) -> None:
+        # fast=5, slow=10, signal=5: 10 + 5 - 2 = 13
+        assert (
+            _leading_nulls(polarticks.accelerator_oscillator(_DF, fast=5, slow=10, signal=5)) == 13
+        )
+
+
+class TestSMINullPrefix:
+    """SMI: (period-1) + 2*(max(smooth1,smooth2)-1) leading nulls."""
+
+    def test_smi_null_count(self) -> None:
+        # period=5, smooth1=3, smooth2=3: (5-1) + 2*(3-1) = 4 + 4 = 8
+        df = polarticks.smi(_DF, period=5, smooth1=3, smooth2=3, signal=3)
+        assert _leading_nulls_col(df, "smi") == 8
+
+    def test_signal_has_more_nulls(self) -> None:
+        df = polarticks.smi(_DF, period=5, smooth1=3, smooth2=3, signal=3)
+        assert _leading_nulls_col(df, "smi_signal") > _leading_nulls_col(df, "smi")
+
+
+class TestRVINullPrefix:
+    """RVI: 3 shifts + SMA → period+2 leading nulls for rvi; period+5 for signal."""
+
+    def test_rvi_null_count(self) -> None:
+        df = polarticks.rvi(_DF, period=_P)
+        assert _leading_nulls_col(df, "rvi") == _P + 2
+
+    def test_rvi_signal_null_count(self) -> None:
+        df = polarticks.rvi(_DF, period=_P)
+        assert _leading_nulls_col(df, "rvi_signal") == _P + 5
+
+
+class TestBOPNullPrefix:
+    """BOP: period-1 leading nulls when smoothed; 0 when period=1."""
+
+    def test_smoothed_null_count(self) -> None:
+        assert _leading_nulls(polarticks.bop(_DF, _P)) == _P - 1
+
+    def test_unsmoothed_null_count(self) -> None:
+        assert _leading_nulls(polarticks.bop(_DF, 1)) == 0
+
+
+class TestChoppinessIndexNullPrefix:
+    """Choppiness Index: period-1 leading nulls."""
+
+    def test_null_count(self) -> None:
+        assert _leading_nulls(polarticks.choppiness_index(_DF, _P)) == _P - 1
+
+    def test_no_accidental_zeros(self) -> None:
+        assert _no_accidental_zeros(polarticks.choppiness_index(_DF, _P), _P - 1)
+
+
+class TestVolatilityRatioNullPrefix:
+    """Volatility Ratio: period-1 leading nulls."""
+
+    def test_null_count(self) -> None:
+        assert _leading_nulls(polarticks.volatility_ratio(_DF, _P)) == _P - 1
+
+
+class TestAlligatorNullPrefix:
+    """Alligator: (jaw_period-1) + jaw_offset leading nulls for the jaw line."""
+
+    def test_jaw_null_count(self) -> None:
+        df = polarticks.alligator(_DF, jaw_period=13, jaw_offset=8)
+        assert _leading_nulls_col(df, "jaw") == 20  # (13-1) + 8
+
+
+class TestLinRegChannelNullPrefix:
+    """LinReg Channel: period-1 leading nulls."""
+
+    def test_null_count(self) -> None:
+        df = polarticks.linreg_channel(_CLOSE, period=_P)
+        assert _leading_nulls_col(df, "lrc_mid") == _P - 1
+
+    def test_no_accidental_zeros(self) -> None:
+        df = polarticks.linreg_channel(_CLOSE, period=_P)
+        assert _no_accidental_zeros(df["lrc_mid"], _P - 1)
+
+
+class TestTSFNullPrefix:
+    """TSF: period-1 leading nulls."""
+
+    def test_null_count(self) -> None:
+        assert _leading_nulls(polarticks.tsf(_CLOSE, _P)) == _P - 1
+
+
+class TestChandeKrollStopNullPrefix:
+    """Chande Kroll Stop: atr_period + stop_period - 2 leading nulls."""
+
+    def test_null_count(self) -> None:
+        # atr_period=5, stop_period=5: 5 + 5 - 2 = 8
+        df = polarticks.chande_kroll_stop(_DF, atr_period=5, stop_period=5)
+        assert _leading_nulls_col(df, "cks_long") == 8
+
+
+class TestChaikinOscNullPrefix:
+    """Chaikin Oscillator: slow-1 leading nulls."""
+
+    def test_null_count(self) -> None:
+        assert _leading_nulls(polarticks.chaikin_osc(_DF, fast=3, slow=_P)) == _P - 1
+
+
+class TestVolumeOscillatorNullPrefix:
+    """Volume Oscillator: slow-1 leading nulls."""
+
+    def test_null_count(self) -> None:
+        assert _leading_nulls(polarticks.volume_oscillator(_VOLUME, fast=3, slow=_P)) == _P - 1
+
+
+class TestTWAPNullPrefix:
+    """TWAP: 0 nulls cumulative; period-1 nulls rolling."""
+
+    def test_cumulative_null_count(self) -> None:
+        assert _leading_nulls(polarticks.twap(_DF)) == 0
+
+    def test_rolling_null_count(self) -> None:
+        assert _leading_nulls(polarticks.twap(_DF, period=_P)) == _P - 1
+
+
+class TestRollingZScoreNullPrefix:
+    """Rolling Z-Score: period-1 leading nulls."""
+
+    def test_null_count(self) -> None:
+        assert _leading_nulls(polarticks.rolling_zscore(_CLOSE, _P)) == _P - 1
+
+
+class TestRollingBetaNullPrefix:
+    """Rolling Beta: period leading nulls (log return adds one extra)."""
+
+    def test_null_count(self) -> None:
+        bench = _CLOSE * 1.5
+        assert _leading_nulls(polarticks.rolling_beta(_CLOSE, bench, _P)) == _P
+
+
+class TestHurstExponentNullPrefix:
+    """Hurst Exponent: period leading nulls (log return adds one extra)."""
+
+    def test_null_count(self) -> None:
+        assert _leading_nulls(polarticks.hurst_exponent(_CLOSE, 20)) == 20
