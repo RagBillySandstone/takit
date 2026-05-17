@@ -11,6 +11,9 @@ rolling_highest Rolling n-period maximum
 rolling_lowest  Rolling n-period minimum
 rolling_std     Rolling n-period sample standard deviation
 percent_rank    Rolling percentile rank of current value within last n bars
+rolling_zscore  Rolling Z-score: (value − mean) / std
+rolling_beta    Rolling beta: OLS regression coefficient vs a benchmark series
+hurst_exponent  Rolling Hurst Exponent — trending vs. mean-reverting regime detection
 """
 
 from __future__ import annotations
@@ -226,3 +229,157 @@ def percent_rank(series: pl.Series, period: int) -> pl.Series:
         min_samples=period,
     )
     return result.alias(f"prank_{period}")
+
+
+# ---------------------------------------------------------------------------
+# Rolling Z-Score
+# ---------------------------------------------------------------------------
+
+
+def rolling_zscore(series: pl.Series, period: int) -> pl.Series:
+    """Rolling Z-score — number of standard deviations above/below the rolling mean.
+
+    At each bar, normalises the current value relative to the rolling window's
+    mean and sample standard deviation:
+
+        z[t] = (series[t] − rolling_mean(series, period)[t])
+                / rolling_std(series, period)[t]
+
+    Null-prefix: ``period − 1`` bars (driven by the rolling std warm-up).
+
+    Args:
+        series: Input series.
+        period: Rolling window length (must be ≥ 2).
+
+    Returns:
+        Series named ``zscore_{period}``.
+
+    Raises:
+        ValueError: If ``period < 2``.
+    """
+    _validate_period(period, "Rolling Z-Score", min_period=2)
+
+    mean = series.rolling_mean(window_size=period, min_samples=period)
+    std = series.rolling_std(window_size=period, min_samples=period)
+
+    # fill_nan converts division by zero (constant window) to null.
+    return ((series - mean) / std).fill_nan(None).alias(f"zscore_{period}")
+
+
+# ---------------------------------------------------------------------------
+# Rolling Beta
+# ---------------------------------------------------------------------------
+
+
+def rolling_beta(series: pl.Series, benchmark: pl.Series, period: int) -> pl.Series:
+    """Rolling beta — sensitivity of returns to a benchmark series.
+
+    Beta is the OLS regression slope of the series' log returns against the
+    benchmark's log returns over a rolling window.  Beta > 1 means the series
+    moves more than the benchmark; 0 < Beta < 1 means it moves less; negative
+    Beta means it moves inversely.
+
+    Algorithm:
+        ret_a = log(series[t] / series[t-1])
+        ret_b = log(benchmark[t] / benchmark[t-1])
+        beta  = Cov(ret_a, ret_b, period) / Var(ret_b, period)
+
+    Null-prefix: ``period`` bars (one extra from the log-return diff).
+
+    Args:
+        series: Target price series.
+        benchmark: Benchmark price series (must be the same length as ``series``).
+        period: Rolling window length (must be ≥ 2).
+
+    Returns:
+        Series named ``beta_{period}``.
+
+    Raises:
+        ValueError: If ``period < 2``.
+    """
+    _validate_period(period, "Rolling Beta", min_period=2)
+
+    # Log returns; first bar is null for both.
+    ret_a = (series / series.shift(1)).log(base=math.e)
+    ret_b = (benchmark / benchmark.shift(1)).log(base=math.e)
+
+    # Rolling covariance via the identity Cov(a,b) = E[ab] - E[a]*E[b].
+    ab = ret_a * ret_b
+    mean_ab = ab.rolling_mean(window_size=period, min_samples=period)
+    mean_a = ret_a.rolling_mean(window_size=period, min_samples=period)
+    mean_b = ret_b.rolling_mean(window_size=period, min_samples=period)
+    mean_b2 = (ret_b**2).rolling_mean(window_size=period, min_samples=period)
+
+    cov_ab = mean_ab - mean_a * mean_b
+    var_b = mean_b2 - mean_b**2
+
+    # fill_nan handles zero-variance benchmark windows (constant benchmark price).
+    return (cov_ab / var_b).fill_nan(None).alias(f"beta_{period}")
+
+
+# ---------------------------------------------------------------------------
+# Hurst Exponent
+# ---------------------------------------------------------------------------
+
+
+def hurst_exponent(series: pl.Series, period: int = 100) -> pl.Series:
+    """Rolling Hurst Exponent — trending vs. mean-reverting regime detection.
+
+    The Hurst Exponent H characterises the long-memory property of the series:
+        H > 0.5 → persistent (trending),
+        H = 0.5 → random walk,
+        H < 0.5 → anti-persistent (mean-reverting).
+
+    Estimated via the rescaled range (R/S) method applied to log returns in
+    each rolling window:
+        returns   = log(price[t] / price[t-1])  in the window
+        cumdev[t] = Σ(returns[0..t] − mean(returns))
+        R         = max(cumdev) − min(cumdev)
+        S         = std(returns)
+        H         = log(R / S) / log(len(window))
+
+    Null-prefix: ``period`` bars (one extra from the log-return diff).
+
+    Args:
+        series: Input price series.
+        period: Rolling window length for each R/S estimate (default 100; must be ≥ 10).
+
+    Returns:
+        Series named ``hurst_{period}``.
+
+    Raises:
+        ValueError: If ``period < 10``.
+    """
+    _validate_period(period, "Hurst Exponent", min_period=10)
+
+    # Log returns; first value is null — rolling_map will see it in windows.
+    log_ret = (series / series.shift(1)).log(base=math.e)
+
+    def _hurst(w: pl.Series) -> float:
+        """R/S analysis for a single rolling window of log returns."""
+        vals = [v for v in w.to_list() if v is not None]
+        n = len(vals)
+        if n < 2:
+            return float("nan")
+
+        # Mean-centred cumulative sum (cumulative deviation).
+        mean_r = sum(vals) / n
+        cumdev: list[float] = []
+        running = 0.0
+        for v in vals:
+            running += v - mean_r
+            cumdev.append(running)
+
+        r = max(cumdev) - min(cumdev)
+        if r == 0.0:
+            return float("nan")
+
+        std_r = (sum((v - mean_r) ** 2 for v in vals) / n) ** 0.5
+        if std_r == 0.0:
+            return float("nan")
+
+        return math.log(r / std_r) / math.log(n)
+
+    result = log_ret.rolling_map(function=_hurst, window_size=period, min_samples=period)
+    # Convert NaN placeholders (from degenerate windows) to null.
+    return result.fill_nan(None).alias(f"hurst_{period}")

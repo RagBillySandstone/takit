@@ -24,6 +24,12 @@ dpo                 Detrended Price Oscillator (removes trend to isolate price c
 kst                 Know Sure Thing (weighted sum of four smoothed ROC oscillators)
 coppock             Coppock Curve (WMA of combined ROC; long-term bottom detector)
 fisher_transform    Fisher Transform — arctanh normalisation of HL midpoint
+awesome_oscillator  Awesome Oscillator — SMA(midpoint,5) minus SMA(midpoint,34)
+accelerator_oscillator  Accelerator Oscillator — AO minus SMA(AO,5)
+smi                 Stochastic Momentum Index — double-EMA stochastic variant
+rvi                 Relative Vigor Index — open/close vs high/low momentum
+bop                 Balance of Power — close position within open-close range
+qqe                 Quantitative Qualitative Estimation — RSI-based trailing trend line
 """
 
 from __future__ import annotations
@@ -33,7 +39,12 @@ import math
 import polars as pl
 
 from polarticks._validate import _validate_period
-from polarticks.moving_averages import ema, sma, wilder_smooth, wma
+from polarticks.moving_averages import (  # noqa: F401 (wma used by coppock)
+    ema,
+    sma,
+    wilder_smooth,
+    wma,
+)
 
 # ---------------------------------------------------------------------------
 # RSI
@@ -872,3 +883,367 @@ def fisher_transform(ohlc: pl.DataFrame, period: int = 9) -> pl.DataFrame:
     signal = fisher.shift(1).alias("fisher_signal")
 
     return pl.DataFrame({"fisher": fisher, "fisher_signal": signal})
+
+
+# ---------------------------------------------------------------------------
+# Awesome Oscillator
+# ---------------------------------------------------------------------------
+
+
+def awesome_oscillator(
+    ohlc: pl.DataFrame,
+    fast: int = 5,
+    slow: int = 34,
+) -> pl.Series:
+    """Awesome Oscillator (Bill Williams) — SMA difference of bar midpoints.
+
+    AO compares a fast and slow simple moving average of the bar's median
+    price ``(high + low) / 2`` to gauge momentum.  Values above zero signal
+    bullish momentum; below zero, bearish momentum.  A cross of zero is a
+    primary buy/sell signal; the "saucer" and twin-peak setups are secondary.
+
+    Algorithm:
+        midpoint = (high + low) / 2
+        AO = SMA(midpoint, fast) − SMA(midpoint, slow)
+
+    Null-prefix: ``slow − 1`` bars.
+
+    Args:
+        ohlc: DataFrame with columns ``high`` and ``low``.
+        fast: Fast SMA period (default 5).
+        slow: Slow SMA period (default 34).
+
+    Returns:
+        Series named ``ao``.
+
+    Raises:
+        ValueError: If ``fast >= slow``.
+    """
+    if fast >= slow:
+        raise ValueError(f"AO fast period ({fast}) must be less than slow period ({slow}).")
+
+    midpoint = (ohlc["high"] + ohlc["low"]) / 2.0
+    # Null-propagation aligns naturally: slow SMA drives the warm-up.
+    return (sma(midpoint, fast) - sma(midpoint, slow)).alias("ao")
+
+
+# ---------------------------------------------------------------------------
+# Accelerator Oscillator
+# ---------------------------------------------------------------------------
+
+
+def accelerator_oscillator(
+    ohlc: pl.DataFrame,
+    fast: int = 5,
+    slow: int = 34,
+    signal: int = 5,
+) -> pl.Series:
+    """Accelerator Oscillator (Bill Williams) — momentum of the Awesome Oscillator.
+
+    AC is the difference between the Awesome Oscillator and a moving average
+    of AO itself.  It changes direction before AO, providing an earlier signal
+    in Bill Williams' three-screen trading system.
+
+    Algorithm:
+        AO = SMA(midpoint, fast) − SMA(midpoint, slow)
+        AC = AO − SMA(AO, signal)
+
+    Null-prefix: ``slow + signal − 2`` bars.
+
+    Args:
+        ohlc: DataFrame with columns ``high`` and ``low``.
+        fast: AO fast SMA period (default 5).
+        slow: AO slow SMA period (default 34).
+        signal: SMA period applied to AO (default 5).
+
+    Returns:
+        Series named ``ac``.
+
+    Raises:
+        ValueError: If ``fast >= slow`` or ``signal < 1``.
+    """
+    _validate_period(signal, "AC signal")
+    ao = awesome_oscillator(ohlc, fast, slow)
+    return (ao - sma(ao, signal)).alias("ac")
+
+
+# ---------------------------------------------------------------------------
+# Stochastic Momentum Index
+# ---------------------------------------------------------------------------
+
+
+def smi(
+    ohlc: pl.DataFrame,
+    period: int = 14,
+    smooth1: int = 3,
+    smooth2: int = 3,
+    signal: int = 9,
+) -> pl.DataFrame:
+    """Stochastic Momentum Index — double-EMA smoothed stochastic oscillator.
+
+    SMI (Blau, 1993) reduces the noise of the classic stochastic by applying
+    two rounds of EMA smoothing to both the numerator (distance of close from
+    the midpoint of the period's range) and the denominator (the range itself).
+    It oscillates between −100 and +100.
+
+    Algorithm:
+        HH   = rolling_max(high,  period)
+        LL   = rolling_min(low,   period)
+        D    = close − (HH + LL) / 2
+        HLS  = HH − LL
+        DS   = EMA(EMA(D,  smooth1), smooth2)   (double-smoothed distance)
+        HLSS = EMA(EMA(HLS, smooth1), smooth2)  (double-smoothed range)
+        SMI  = 100 × DS / (0.5 × HLSS)
+        signal = EMA(SMI, signal)
+
+    Null-prefix for ``smi``:    ``(period − 1) + 2 × max(smooth1, smooth2) − 2`` bars.
+
+    Args:
+        ohlc: DataFrame with columns ``high``, ``low``, ``close``.
+        period: Lookback for rolling high/low (default 14).
+        smooth1: Period of the first EMA smoothing pass (default 3).
+        smooth2: Period of the second EMA smoothing pass (default 3).
+        signal: EMA period for the signal line (default 9).
+
+    Returns:
+        DataFrame with columns ``smi`` and ``smi_signal``.
+
+    Raises:
+        ValueError: If any period < 1.
+    """
+    _validate_period(period, "SMI")
+    _validate_period(smooth1, "SMI smooth1")
+    _validate_period(smooth2, "SMI smooth2")
+    _validate_period(signal, "SMI signal")
+
+    high = ohlc["high"]
+    low = ohlc["low"]
+    close = ohlc["close"]
+
+    # Rolling extremes of the period window.
+    hh = high.rolling_max(window_size=period, min_samples=period)
+    ll = low.rolling_min(window_size=period, min_samples=period)
+
+    # Distance from close to the midpoint; range of the window.
+    d = close - (hh + ll) / 2.0
+    hls = hh - ll
+
+    # Two EMA passes smooth each series independently.
+    ds = ema(ema(d, smooth1), smooth2)
+    hlss = ema(ema(hls, smooth1), smooth2)
+
+    # fill_nan handles perfectly flat markets where HLSS == 0.
+    smi_vals = (100.0 * ds / (0.5 * hlss)).fill_nan(0.0).alias("smi")
+    smi_signal = ema(smi_vals, signal).alias("smi_signal")
+
+    return pl.DataFrame({"smi": smi_vals, "smi_signal": smi_signal})
+
+
+# ---------------------------------------------------------------------------
+# Relative Vigor Index
+# ---------------------------------------------------------------------------
+
+
+def rvi(ohlc: pl.DataFrame, period: int = 10) -> pl.DataFrame:
+    """Relative Vigor Index — symmetrically weighted open/close momentum.
+
+    RVI (Ehlers, 2002) measures the tendency for prices to close higher in
+    a rising market by using a symmetric four-bar triangular weighted average
+    of ``(close − open)`` relative to ``(high − low)``.  Values above zero
+    are bullish; below zero are bearish.
+
+    Algorithm:
+        num_raw = (CO + 2×CO[−1] + 2×CO[−2] + CO[−3]) / 6   where CO = close − open
+        den_raw = (HL + 2×HL[−1] + 2×HL[−2] + HL[−3]) / 6   where HL = high − low
+        RVI     = SMA(num_raw, period) / SMA(den_raw, period)
+        signal  = (RVI + 2×RVI[−1] + 2×RVI[−2] + RVI[−3]) / 6
+
+    Null-prefix for ``rvi``:    ``period + 2`` bars.
+    Null-prefix for ``rvi_signal``: ``period + 5`` bars.
+
+    Args:
+        ohlc: DataFrame with columns ``open``, ``high``, ``low``, ``close``.
+        period: SMA lookback period (default 10).
+
+    Returns:
+        DataFrame with columns ``rvi`` and ``rvi_signal``.
+
+    Raises:
+        ValueError: If ``period < 1``.
+    """
+    _validate_period(period, "RVI")
+
+    o = ohlc["open"]
+    h = ohlc["high"]
+    lo = ohlc["low"]
+    c = ohlc["close"]
+
+    co = c - o
+    hl = h - lo
+
+    # Symmetric 4-bar triangular weights (1, 2, 2, 1) normalised to sum 6.
+    num_raw = (co + 2.0 * co.shift(1) + 2.0 * co.shift(2) + co.shift(3)) / 6.0
+    den_raw = (hl + 2.0 * hl.shift(1) + 2.0 * hl.shift(2) + hl.shift(3)) / 6.0
+
+    # fill_nan handles zero-range bars (identical high and low throughout period).
+    rvi_vals = (sma(num_raw, period) / sma(den_raw, period)).fill_nan(0.0).alias("rvi")
+
+    # Signal: same 4-bar symmetric average applied to the RVI line.
+    rvi_signal = (
+        (rvi_vals + 2.0 * rvi_vals.shift(1) + 2.0 * rvi_vals.shift(2) + rvi_vals.shift(3)) / 6.0
+    ).alias("rvi_signal")
+
+    return pl.DataFrame({"rvi": rvi_vals, "rvi_signal": rvi_signal})
+
+
+# ---------------------------------------------------------------------------
+# Balance of Power
+# ---------------------------------------------------------------------------
+
+
+def bop(ohlc: pl.DataFrame, period: int = 14) -> pl.Series:
+    """Balance of Power — close position within the bar's open-close range.
+
+    BOP (Igor Livshin) measures the relative strength between buyers and
+    sellers by comparing how far the close moved from the open, normalised
+    by the high-low range.  Values near +1 indicate strong buying pressure;
+    values near −1 indicate strong selling pressure.
+
+        BOP = (close − open) / (high − low)
+
+    Optional SMA smoothing reduces noise.
+
+    Null-prefix (period > 1): ``period − 1`` bars.
+    Null-prefix (period = 1): 0 bars (raw, no smoothing).
+
+    Args:
+        ohlc: DataFrame with columns ``open``, ``high``, ``low``, ``close``.
+        period: SMA smoothing period; use 1 for unsmoothed raw values (default 14).
+
+    Returns:
+        Series named ``bop_{period}``.
+
+    Raises:
+        ValueError: If ``period < 1``.
+    """
+    _validate_period(period, "BOP")
+
+    hl_range = ohlc["high"] - ohlc["low"]
+    # fill_nan: a zero-range bar (open == high == low == close) → BOP is 0.
+    raw_bop = ((ohlc["close"] - ohlc["open"]) / hl_range).fill_nan(0.0)
+
+    if period == 1:
+        return raw_bop.alias("bop_1")
+
+    return sma(raw_bop, period).alias(f"bop_{period}")
+
+
+# ---------------------------------------------------------------------------
+# QQE
+# ---------------------------------------------------------------------------
+
+
+def qqe(
+    series: pl.Series,
+    rsi_period: int = 14,
+    sf: int = 5,
+    qqe_factor: float = 4.236,
+) -> pl.DataFrame:
+    """Quantitative Qualitative Estimation — RSI-derived adaptive trailing trend line.
+
+    QQE smooths RSI with an EMA and then builds an adaptive trailing stop
+    from the ATR of the smoothed RSI (double Wilder-smoothed absolute delta).
+    The QQE line is a ratcheting band: it can only move in the direction of
+    the prevailing RSI trend and flips when the RSI crosses to the opposite
+    side.  Price above the QQE line is bullish; below is bearish.
+
+    Algorithm:
+        rsi_ma   = EMA(RSI(series, rsi_period), sf)
+        atr_rsi  = |rsi_ma[t] − rsi_ma[t−1]|
+        dar      = Wilder(Wilder(atr_rsi, sf×2−1), sf×2−1) × qqe_factor
+        # Stateful trailing bands:
+        long_band[t]  = max(rsi_ma[t] − dar[t], long_band[t−1])  while rsi_ma trending up
+        short_band[t] = min(rsi_ma[t] + dar[t], short_band[t−1]) while rsi_ma trending down
+        qqe_line = long_band or short_band depending on which side rsi_ma is on
+
+    Null-prefix: ``rsi_period + 2 × (sf × 2 − 1) − 1`` bars (dominated by the
+    double Wilder smooth of ``dar``).
+
+    Args:
+        series: Close price series.
+        rsi_period: RSI period (default 14; must be ≥ 2).
+        sf: EMA smoothing factor period (default 5).
+        qqe_factor: ATR multiplier controlling band width (default 4.236).
+
+    Returns:
+        DataFrame with columns ``qqe_line`` (trailing stop) and
+        ``qqe_fast`` (smoothed RSI oscillator).
+
+    Raises:
+        ValueError: If ``rsi_period < 2`` or ``sf < 1``.
+    """
+    _validate_period(rsi_period, "QQE rsi_period", min_period=2)
+    _validate_period(sf, "QQE sf")
+
+    rsi_vals = rsi(series, rsi_period)
+    rsi_ma = ema(rsi_vals, sf)
+
+    # Pseudo-ATR of smoothed RSI via double Wilder smoothing.
+    atr_rsi = rsi_ma.diff(1).abs()
+    slow = sf * 2 - 1
+    dar = wilder_smooth(wilder_smooth(atr_rsi, slow), slow) * qqe_factor
+
+    rma_list: list[float | None] = rsi_ma.to_list()
+    dar_list: list[float | None] = dar.to_list()
+    n = len(rma_list)
+    qqe_line: list[float | None] = [None] * n
+
+    # Locate the first bar where both rsi_ma and dar are valid.
+    start = 0
+    while start < n and (rma_list[start] is None or dar_list[start] is None):
+        start += 1
+
+    if start >= n:
+        return pl.DataFrame({"qqe_line": qqe_line, "qqe_fast": rma_list})
+
+    # Seed the trailing bands at the first valid bar.
+    long_prev: float = rma_list[start] - dar_list[start]  # type: ignore[operator]
+    short_prev: float = rma_list[start] + dar_list[start]  # type: ignore[operator]
+    qqe_prev: float = rma_list[start]  # type: ignore[assignment]
+    qqe_line[start] = qqe_prev
+
+    for idx in range(start + 1, n):
+        rma = rma_list[idx]
+        d = dar_list[idx]
+        if rma is None or d is None:
+            qqe_line[idx] = None
+            continue
+
+        rma_prev = rma_list[idx - 1]
+
+        # Ratchet long band: advances up when price is above it, resets otherwise.
+        if rma > long_prev and rma_prev is not None and rma_prev > long_prev:
+            long_curr = max(rma - d, long_prev)
+        else:
+            long_curr = rma - d
+
+        # Ratchet short band: advances down when price is below it, resets otherwise.
+        if rma < short_prev and rma_prev is not None and rma_prev < short_prev:
+            short_curr = min(rma + d, short_prev)
+        else:
+            short_curr = rma + d
+
+        # Assign QQE line to whichever side RSI is currently on.
+        if rma > short_curr:
+            qqe_curr = long_curr
+        elif rma < long_curr:
+            qqe_curr = short_curr
+        elif qqe_prev == long_prev:
+            qqe_curr = long_curr
+        else:
+            qqe_curr = short_curr
+
+        qqe_line[idx] = qqe_curr
+        long_prev, short_prev, qqe_prev = long_curr, short_curr, qqe_curr
+
+    return pl.DataFrame({"qqe_line": qqe_line, "qqe_fast": rma_list})

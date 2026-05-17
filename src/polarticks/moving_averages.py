@@ -22,6 +22,8 @@ zlema             Zero Lag EMA                (lag-corrected via error-correctio
 t3                Tillson T3                  (triple GD expansion; low-lag, smooth)
 alma              Arnaud Legoux Moving Average (Gaussian-weighted rolling mean)
 var_mov_avg       Variable Moving Average     (signal/noise ER-adaptive smoothing)
+frama             Fractal Adaptive Moving Average (fractal-dimension adaptive smoothing)
+laguerre          Laguerre Filter             (four-element low-lag smoother, Ehlers)
 """
 
 from __future__ import annotations
@@ -778,3 +780,154 @@ def var_mov_avg(
         output[idx] = ama
 
     return pl.Series(f"var_mov_avg_{period}", output, dtype=pl.Float64)
+
+
+# ---------------------------------------------------------------------------
+# FRAMA
+# ---------------------------------------------------------------------------
+
+
+def frama(series: pl.Series, period: int = 16) -> pl.Series:
+    """Fractal Adaptive Moving Average — fractal-dimension adaptive EMA.
+
+    FRAMA (Ehlers, 2004) adapts its smoothing factor based on the fractal
+    dimension of the price series.  In trending markets the dimension
+    approaches 1 (straight line) and FRAMA tracks price quickly; in choppy
+    markets the dimension approaches 2 (Brownian motion) and FRAMA barely
+    moves, filtering out noise.
+
+    Algorithm:
+        half = period // 2
+        n1   = (max(first_half) − min(first_half)) / half
+        n2   = (max(second_half) − min(second_half)) / half
+        n3   = (max(full_window) − min(full_window)) / period
+        D    = (log(n1 + n2) − log(n3)) / log(2)
+        alpha = exp(−4.6 × (D − 1)),  clamped to [0.01, 1]
+        FRAMA[t] = alpha × price[t] + (1 − alpha) × FRAMA[t−1]
+
+    ``period`` must be even (odd values are rounded down to the nearest even).
+    Null-prefix: ``period − 1`` bars (seeded at bar ``period − 1``).
+
+    Args:
+        series: Input price series (e.g., close).
+        period: Lookback window; must be even and ≥ 4 (default 16).
+
+    Returns:
+        Series of FRAMA values. The first ``period − 1`` values are ``null``.
+
+    Raises:
+        ValueError: If ``period < 4``.
+    """
+    _validate_period(period, "FRAMA", min_period=4)
+    # Silently enforce even period — fractal dimension requires equal sub-windows.
+    if period % 2 != 0:
+        period = period - 1
+
+    half = period // 2
+    raw: list[float | None] = series.to_list()
+    n = len(raw)
+    output: list[float | None] = [None] * n
+
+    # Seed FRAMA at bar period-1 with the raw price.
+    seed_idx = period - 1
+    if seed_idx >= n or raw[seed_idx] is None:
+        return pl.Series(f"frama_{period}", output, dtype=pl.Float64)
+
+    frama_val: float = raw[seed_idx]  # type: ignore[assignment]
+    output[seed_idx] = frama_val
+
+    for idx in range(period, n):
+        price = raw[idx]
+        if price is None:
+            output[idx] = None
+            continue
+
+        # Extract the three windows: first half, second half, and full period.
+        full = [v for v in raw[idx - period + 1 : idx + 1] if v is not None]
+        first = [v for v in raw[idx - period + 1 : idx - half + 1] if v is not None]
+        second = [v for v in raw[idx - half + 1 : idx + 1] if v is not None]
+
+        if len(full) < period or len(first) < half or len(second) < half:
+            output[idx] = None
+            continue
+
+        # Fractal dimension via the log-ratio of range estimates.
+        n3 = (max(full) - min(full)) / period
+        n1 = (max(first) - min(first)) / half
+        n2 = (max(second) - min(second)) / half
+
+        if n3 > 0.0 and (n1 + n2) > 0.0:
+            d = (math.log(n1 + n2) - math.log(n3)) / math.log(2.0)
+            d = max(1.0, min(2.0, d))  # clamp to valid fractal-dimension range
+            alpha = math.exp(-4.6 * (d - 1.0))
+            alpha = max(0.01, min(1.0, alpha))
+        else:
+            # Flat sub-window: fall back to minimum (slow) smoothing.
+            alpha = 0.01
+
+        frama_val = alpha * price + (1.0 - alpha) * frama_val
+        output[idx] = frama_val
+
+    return pl.Series(f"frama_{period}", output, dtype=pl.Float64)
+
+
+# ---------------------------------------------------------------------------
+# Laguerre Filter
+# ---------------------------------------------------------------------------
+
+
+def laguerre(series: pl.Series, gamma: float = 0.8) -> pl.Series:
+    """Laguerre Filter — four-element state-space low-lag smoother.
+
+    The Laguerre Filter (Ehlers, 2004) achieves low lag by maintaining a
+    four-element state machine with a single ``gamma`` parameter that
+    controls the lag/smoothness trade-off.  Lower ``gamma`` → less lag but
+    noisier; higher ``gamma`` → smoother but more lagged.
+
+    Algorithm:
+        L0[t] = (1 − γ) × price[t] + γ × L0[t−1]
+        L1[t] = −γ × L0[t] + L0[t−1] + γ × L1[t−1]
+        L2[t] = −γ × L1[t] + L1[t−1] + γ × L2[t−1]
+        L3[t] = −γ × L2[t] + L2[t−1] + γ × L3[t−1]
+        filter[t] = (L0[t] + 2×L1[t] + 2×L2[t] + L3[t]) / 6
+
+    No formal null-prefix: values are valid from bar 0, but the filter
+    requires a handful of bars to converge from its zero initial state.
+
+    Args:
+        series: Input price series (e.g., close).
+        gamma: Smoothing factor in the open interval (0, 1) (default 0.8).
+
+    Returns:
+        Series of Laguerre Filter values; all bars produce a value.
+
+    Raises:
+        ValueError: If ``gamma`` is not strictly in (0, 1).
+    """
+    if not (0.0 < gamma < 1.0):
+        raise ValueError(f"Laguerre gamma must be in (0, 1), got {gamma}.")
+
+    raw: list[float | None] = series.to_list()
+    output: list[float | None] = [None] * len(raw)
+
+    # Four-element state; initialised to zero (cold start).
+    l0_prev = l1_prev = l2_prev = l3_prev = 0.0
+    one_minus_g = 1.0 - gamma
+
+    for idx, price in enumerate(raw):
+        if price is None:
+            # Reset state on missing data so the filter re-warms cleanly.
+            l0_prev = l1_prev = l2_prev = l3_prev = 0.0
+            continue
+
+        # Each stage feeds into the next using the previous state.
+        l0 = one_minus_g * price + gamma * l0_prev
+        l1 = -gamma * l0 + l0_prev + gamma * l1_prev
+        l2 = -gamma * l1 + l1_prev + gamma * l2_prev
+        l3 = -gamma * l2 + l2_prev + gamma * l3_prev
+
+        # Triangular weighted average; outer stages count double.
+        output[idx] = (l0 + 2.0 * l1 + 2.0 * l2 + l3) / 6.0
+        l0_prev, l1_prev, l2_prev, l3_prev = l0, l1, l2, l3
+
+    return pl.Series(f"laguerre_{gamma:.4g}", output, dtype=pl.Float64)

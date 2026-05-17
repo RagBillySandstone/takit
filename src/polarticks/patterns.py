@@ -25,6 +25,14 @@ is_bullish_harami               Small bullish body contained within a prior larg
 is_bearish_harami               Small bearish body contained within a prior large bullish body
 is_abandoned_baby_bullish       Gap-down doji between a bearish and a bullish bar (bottom reversal)
 is_abandoned_baby_bearish       Gap-up doji between a bullish and a bearish bar (top reversal)
+is_hanging_man                  Hammer structure appearing after an uptrend (bearish reversal signal)
+is_inverted_hammer              Shooting-star structure after a downtrend (bullish reversal signal)
+is_tweezer_top                  Two-bar equal-high bearish reversal pattern
+is_tweezer_bottom               Two-bar equal-low bullish reversal pattern
+is_dark_cloud_cover             Bearish two-bar reversal: bearish bar opens above prior high, closes into prior body
+is_piercing_line                Bullish two-bar reversal: bullish bar opens below prior low, closes into prior body
+is_rising_three_methods         Five-bar bullish continuation pattern
+is_falling_three_methods        Five-bar bearish continuation pattern
 """
 
 from __future__ import annotations
@@ -758,3 +766,409 @@ def is_abandoned_baby_bearish(
 
     result = bar1_bullish & bar2_doji & gap_up_from_bar1 & bar3_bearish & gap_down_from_bar2
     return result.fill_null(False).alias("abandoned_baby_bearish")
+
+
+# ---------------------------------------------------------------------------
+# Hanging Man / Inverted Hammer (trend-contextual pin bars)
+# ---------------------------------------------------------------------------
+
+
+def is_hanging_man(
+    ohlc: pl.DataFrame,
+    wick_ratio: float = 0.6,
+    body_ratio: float = 0.25,
+    trend_period: int = 5,
+) -> pl.Series:
+    """Detect hanging man candles — hammer structure after an uptrend.
+
+    A hanging man has the same structural shape as a bullish pin bar
+    (long lower wick, small body near the top of the range) but appears
+    after a rising market, signalling a potential bearish reversal as
+    sellers pushed price down before buyers recovered.
+
+    Structure:
+        - Long lower wick: ≥ ``wick_ratio`` × total range.
+        - Small body: ≤ ``body_ratio`` × total range.
+        - Prior uptrend: close[t] > close[t − trend_period].
+
+    Args:
+        ohlc: DataFrame with columns ``open``, ``high``, ``low``, ``close``.
+        wick_ratio: Minimum lower-wick-to-range ratio (default 0.6).
+        body_ratio: Maximum body-to-range ratio (default 0.25).
+        trend_period: Look-back bars to confirm a prior uptrend (default 5).
+
+    Returns:
+        Boolean Series, ``True`` on hanging man bars.
+        The first ``trend_period`` bars are always ``False``.
+    """
+    candle_range = _range(ohlc)
+    body = _body(ohlc)
+    safe_range = candle_range.replace(0.0, float("nan"))
+
+    lower_wick = pl.select(pl.min_horizontal(ohlc["open"], ohlc["close"])).to_series() - ohlc["low"]
+
+    # Structural conditions — identical to pin_bar_bullish.
+    pin_shape = (lower_wick / safe_range >= wick_ratio) & (body / safe_range <= body_ratio)
+
+    # Trend context: current close must be above the close trend_period bars ago.
+    prior_uptrend = ohlc["close"] > ohlc["close"].shift(trend_period)
+
+    return (pin_shape & prior_uptrend).fill_null(False).alias("hanging_man")
+
+
+def is_inverted_hammer(
+    ohlc: pl.DataFrame,
+    wick_ratio: float = 0.6,
+    body_ratio: float = 0.25,
+    trend_period: int = 5,
+) -> pl.Series:
+    """Detect inverted hammer candles — shooting-star structure after a downtrend.
+
+    An inverted hammer has the same structural shape as a bearish pin bar
+    (long upper wick, small body near the bottom of the range) but appears
+    after a declining market, signalling a potential bullish reversal as
+    buyers briefly pushed price up before sellers took control for that bar.
+
+    Structure:
+        - Long upper wick: ≥ ``wick_ratio`` × total range.
+        - Small body: ≤ ``body_ratio`` × total range.
+        - Prior downtrend: close[t] < close[t − trend_period].
+
+    Args:
+        ohlc: DataFrame with columns ``open``, ``high``, ``low``, ``close``.
+        wick_ratio: Minimum upper-wick-to-range ratio (default 0.6).
+        body_ratio: Maximum body-to-range ratio (default 0.25).
+        trend_period: Look-back bars to confirm a prior downtrend (default 5).
+
+    Returns:
+        Boolean Series, ``True`` on inverted hammer bars.
+        The first ``trend_period`` bars are always ``False``.
+    """
+    candle_range = _range(ohlc)
+    body = _body(ohlc)
+    safe_range = candle_range.replace(0.0, float("nan"))
+
+    upper_wick = (
+        ohlc["high"] - pl.select(pl.max_horizontal(ohlc["open"], ohlc["close"])).to_series()
+    )
+
+    # Structural conditions — identical to pin_bar_bearish.
+    pin_shape = (upper_wick / safe_range >= wick_ratio) & (body / safe_range <= body_ratio)
+
+    # Trend context: current close must be below the close trend_period bars ago.
+    prior_downtrend = ohlc["close"] < ohlc["close"].shift(trend_period)
+
+    return (pin_shape & prior_downtrend).fill_null(False).alias("inverted_hammer")
+
+
+# ---------------------------------------------------------------------------
+# Tweezer Top / Tweezer Bottom
+# ---------------------------------------------------------------------------
+
+
+def is_tweezer_top(
+    ohlc: pl.DataFrame,
+    tolerance: float = 0.001,
+    body_ratio: float = 0.3,
+) -> pl.Series:
+    """Detect tweezer top — two consecutive bars with equal highs (bearish reversal).
+
+    The tweezer top signals a failed breakout: the first bar is bullish and
+    the second is bearish, both with approximately equal highs.  The shared
+    high acts as resistance, and the rejection of the level by the second
+    bearish bar suggests the uptrend is stalling.
+
+    Conditions:
+        Bar 1 (i−1): Bullish candle with substantial body.
+        Bar 2 (i):   Bearish candle with substantial body.
+        |high[i] − high[i−1]| / high[i−1] ≤ tolerance  (equal highs).
+
+    Args:
+        ohlc: DataFrame with columns ``open``, ``high``, ``low``, ``close``.
+        tolerance: Maximum relative difference between the two highs (default 0.001).
+        body_ratio: Minimum body-to-range ratio for both candles (default 0.3).
+
+    Returns:
+        Boolean Series, ``True`` on Bar 2.  The first bar is always ``False``.
+    """
+    prev_open = ohlc["open"].shift(1)
+    prev_high = ohlc["high"].shift(1)
+    prev_close = ohlc["close"].shift(1)
+    prev_low = ohlc["low"].shift(1)
+
+    # Bar 1 must be a substantial bullish candle.
+    bar1_bullish = (prev_close > prev_open) & (
+        _body_range_ratio(prev_open, prev_close, prev_high, prev_low) >= body_ratio
+    )
+
+    # Bar 2 must be a substantial bearish candle.
+    curr_bearish = (ohlc["close"] < ohlc["open"]) & (
+        _body_range_ratio(ohlc["open"], ohlc["close"], ohlc["high"], ohlc["low"]) >= body_ratio
+    )
+
+    # Highs are approximately equal (relative tolerance guards against price-scale issues).
+    equal_highs = (
+        (ohlc["high"] - prev_high).abs() / prev_high.abs().replace(0.0, float("nan"))
+    ) <= tolerance
+
+    return (bar1_bullish & curr_bearish & equal_highs).fill_null(False).alias("tweezer_top")
+
+
+def is_tweezer_bottom(
+    ohlc: pl.DataFrame,
+    tolerance: float = 0.001,
+    body_ratio: float = 0.3,
+) -> pl.Series:
+    """Detect tweezer bottom — two consecutive bars with equal lows (bullish reversal).
+
+    The tweezer bottom signals a double test of support: the first bar is
+    bearish and the second is bullish, both with approximately equal lows.
+    The shared low acts as support, and the bullish recovery on the second
+    bar suggests the downtrend is losing momentum.
+
+    Conditions:
+        Bar 1 (i−1): Bearish candle with substantial body.
+        Bar 2 (i):   Bullish candle with substantial body.
+        |low[i] − low[i−1]| / |low[i−1]| ≤ tolerance  (equal lows).
+
+    Args:
+        ohlc: DataFrame with columns ``open``, ``high``, ``low``, ``close``.
+        tolerance: Maximum relative difference between the two lows (default 0.001).
+        body_ratio: Minimum body-to-range ratio for both candles (default 0.3).
+
+    Returns:
+        Boolean Series, ``True`` on Bar 2.  The first bar is always ``False``.
+    """
+    prev_open = ohlc["open"].shift(1)
+    prev_high = ohlc["high"].shift(1)
+    prev_close = ohlc["close"].shift(1)
+    prev_low = ohlc["low"].shift(1)
+
+    # Bar 1 must be a substantial bearish candle.
+    bar1_bearish = (prev_close < prev_open) & (
+        _body_range_ratio(prev_open, prev_close, prev_high, prev_low) >= body_ratio
+    )
+
+    # Bar 2 must be a substantial bullish candle.
+    curr_bullish = (ohlc["close"] > ohlc["open"]) & (
+        _body_range_ratio(ohlc["open"], ohlc["close"], ohlc["high"], ohlc["low"]) >= body_ratio
+    )
+
+    # Lows are approximately equal.
+    equal_lows = (
+        (ohlc["low"] - prev_low).abs() / prev_low.abs().replace(0.0, float("nan"))
+    ) <= tolerance
+
+    return (bar1_bearish & curr_bullish & equal_lows).fill_null(False).alias("tweezer_bottom")
+
+
+# ---------------------------------------------------------------------------
+# Dark Cloud Cover / Piercing Line
+# ---------------------------------------------------------------------------
+
+
+def is_dark_cloud_cover(
+    ohlc: pl.DataFrame,
+    body_ratio: float = 0.3,
+    penetration: float = 0.5,
+) -> pl.Series:
+    """Detect dark cloud cover — two-bar bearish reversal pattern.
+
+    The dark cloud cover signals a potential top reversal:
+
+        Bar 1 (i−1): Substantial bullish candle (close > open).
+        Bar 2 (i):   Opens above Bar 1's high, then closes below the midpoint
+                     of Bar 1's body — demonstrating strong selling pressure.
+
+    Args:
+        ohlc: DataFrame with columns ``open``, ``high``, ``low``, ``close``.
+        body_ratio: Minimum body-to-range ratio for both bars (default 0.3).
+        penetration: Minimum fraction of Bar 1's body that Bar 2 must penetrate
+                     (default 0.5 = must close below Bar 1's midpoint).
+
+    Returns:
+        Boolean Series, ``True`` on Bar 2.  The first bar is always ``False``.
+    """
+    prev_open = ohlc["open"].shift(1)
+    prev_high = ohlc["high"].shift(1)
+    prev_close = ohlc["close"].shift(1)
+    prev_low = ohlc["low"].shift(1)
+
+    # Bar 1: substantial bullish candle.
+    bar1_bullish = (prev_close > prev_open) & (
+        _body_range_ratio(prev_open, prev_close, prev_high, prev_low) >= body_ratio
+    )
+
+    # Bar 2: substantial bearish candle.
+    bar2_bearish = (ohlc["close"] < ohlc["open"]) & (
+        _body_range_ratio(ohlc["open"], ohlc["close"], ohlc["high"], ohlc["low"]) >= body_ratio
+    )
+
+    # Bar 2 opens above Bar 1's high (gap-up open).
+    opens_above = ohlc["open"] > prev_high
+
+    # Bar 2 closes below the penetration level into Bar 1's body.
+    penetration_level = prev_close - (prev_close - prev_open) * penetration
+    closes_inside = ohlc["close"] < penetration_level
+
+    result = bar1_bullish & bar2_bearish & opens_above & closes_inside
+    return result.fill_null(False).alias("dark_cloud_cover")
+
+
+def is_piercing_line(
+    ohlc: pl.DataFrame,
+    body_ratio: float = 0.3,
+    penetration: float = 0.5,
+) -> pl.Series:
+    """Detect piercing line — two-bar bullish reversal pattern.
+
+    The piercing line is the bullish mirror of the dark cloud cover:
+
+        Bar 1 (i−1): Substantial bearish candle (close < open).
+        Bar 2 (i):   Opens below Bar 1's low, then closes above the midpoint
+                     of Bar 1's body — demonstrating strong buying recovery.
+
+    Args:
+        ohlc: DataFrame with columns ``open``, ``high``, ``low``, ``close``.
+        body_ratio: Minimum body-to-range ratio for both bars (default 0.3).
+        penetration: Minimum fraction of Bar 1's body that Bar 2 must recover
+                     (default 0.5 = must close above Bar 1's midpoint).
+
+    Returns:
+        Boolean Series, ``True`` on Bar 2.  The first bar is always ``False``.
+    """
+    prev_open = ohlc["open"].shift(1)
+    prev_high = ohlc["high"].shift(1)
+    prev_close = ohlc["close"].shift(1)
+    prev_low = ohlc["low"].shift(1)
+
+    # Bar 1: substantial bearish candle.
+    bar1_bearish = (prev_close < prev_open) & (
+        _body_range_ratio(prev_open, prev_close, prev_high, prev_low) >= body_ratio
+    )
+
+    # Bar 2: substantial bullish candle.
+    bar2_bullish = (ohlc["close"] > ohlc["open"]) & (
+        _body_range_ratio(ohlc["open"], ohlc["close"], ohlc["high"], ohlc["low"]) >= body_ratio
+    )
+
+    # Bar 2 opens below Bar 1's low (gap-down open).
+    opens_below = ohlc["open"] < prev_low
+
+    # Bar 2 closes above the penetration level into Bar 1's body.
+    penetration_level = prev_close + (prev_open - prev_close) * penetration
+    closes_inside = ohlc["close"] > penetration_level
+
+    result = bar1_bearish & bar2_bullish & opens_below & closes_inside
+    return result.fill_null(False).alias("piercing_line")
+
+
+# ---------------------------------------------------------------------------
+# Rising Three Methods / Falling Three Methods
+# ---------------------------------------------------------------------------
+
+
+def is_rising_three_methods(
+    ohlc: pl.DataFrame,
+    body_ratio: float = 0.3,
+    small_body_ratio: float = 0.3,
+) -> pl.Series:
+    """Detect rising three methods — five-bar bullish continuation pattern.
+
+    The rising three methods signals that a brief consolidation within an
+    uptrend has ended and the trend is resuming:
+
+        Bar 1 (i−4): Large bullish candle.
+        Bars 2–4 (i−3 to i−1): Three small bearish candles, all with closes
+                     and opens within Bar 1's body range.
+        Bar 5 (i):   Large bullish candle closing above Bar 1's close.
+
+    Args:
+        ohlc: DataFrame with columns ``open``, ``high``, ``low``, ``close``.
+        body_ratio: Minimum body-to-range ratio for Bars 1 and 5 (default 0.3).
+        small_body_ratio: Maximum body-to-range ratio for the three middle
+                          candles (default 0.3).
+
+    Returns:
+        Boolean Series, ``True`` on Bar 5.  The first four bars are always ``False``.
+    """
+    o = ohlc["open"]
+    h = ohlc["high"]
+    lo = ohlc["low"]
+    c = ohlc["close"]
+
+    # Bar 1 (4 bars ago): large bullish.
+    o1, h1, l1, c1 = o.shift(4), h.shift(4), lo.shift(4), c.shift(4)
+    bar1_bull = (c1 > o1) & (_body_range_ratio(o1, c1, h1, l1) >= body_ratio)
+
+    # Bars 2–4 (i−3 to i−1): small bearish candles contained within Bar 1's body.
+    middle_ok = pl.Series([True] * len(o))
+    for shift in (3, 2, 1):
+        os, hs, ls, cs = o.shift(shift), h.shift(shift), lo.shift(shift), c.shift(shift)
+        bar_small = (cs < os) & (_body_range_ratio(os, cs, hs, ls) <= small_body_ratio)
+        # Body spans [o1, c1] for bullish bar1; closes above o1 and opens below c1.
+        middle_ok = middle_ok & bar_small & (cs >= o1) & (os <= c1)
+
+    # Bar 5 (current): large bullish closing above Bar 1's close.
+    bar5_bull = (c > o) & (_body_range_ratio(o, c, h, lo) >= body_ratio) & (c > c1)
+
+    return (
+        (bar1_bull & middle_ok & bar5_bull)
+        .fill_null(False)
+        .alias(  # type: ignore[possibly-undefined]
+            "rising_three_methods"
+        )
+    )
+
+
+def is_falling_three_methods(
+    ohlc: pl.DataFrame,
+    body_ratio: float = 0.3,
+    small_body_ratio: float = 0.3,
+) -> pl.Series:
+    """Detect falling three methods — five-bar bearish continuation pattern.
+
+    The falling three methods signals that a brief consolidation within a
+    downtrend has ended and the bearish trend is resuming:
+
+        Bar 1 (i−4): Large bearish candle.
+        Bars 2–4 (i−3 to i−1): Three small bullish candles, all with closes
+                     and opens within Bar 1's body range.
+        Bar 5 (i):   Large bearish candle closing below Bar 1's close.
+
+    Args:
+        ohlc: DataFrame with columns ``open``, ``high``, ``low``, ``close``.
+        body_ratio: Minimum body-to-range ratio for Bars 1 and 5 (default 0.3).
+        small_body_ratio: Maximum body-to-range ratio for the three middle
+                          candles (default 0.3).
+
+    Returns:
+        Boolean Series, ``True`` on Bar 5.  The first four bars are always ``False``.
+    """
+    o = ohlc["open"]
+    h = ohlc["high"]
+    lo = ohlc["low"]
+    c = ohlc["close"]
+
+    # Bar 1 (4 bars ago): large bearish.
+    o1, h1, l1, c1 = o.shift(4), h.shift(4), lo.shift(4), c.shift(4)
+    bar1_bear = (c1 < o1) & (_body_range_ratio(o1, c1, h1, l1) >= body_ratio)
+
+    # Bars 2–4: small bullish candles contained within Bar 1's body.
+    middle_ok = pl.Series([True] * len(o))
+    for shift in (3, 2, 1):
+        os, hs, ls, cs = o.shift(shift), h.shift(shift), lo.shift(shift), c.shift(shift)
+        bar_small = (cs > os) & (_body_range_ratio(os, cs, hs, ls) <= small_body_ratio)
+        # Body spans [c1, o1] for bearish bar1; closes below o1 and opens above c1.
+        middle_ok = middle_ok & bar_small & (cs <= o1) & (os >= c1)
+
+    # Bar 5 (current): large bearish closing below Bar 1's close.
+    bar5_bear = (c < o) & (_body_range_ratio(o, c, h, lo) >= body_ratio) & (c < c1)
+
+    return (
+        (bar1_bear & middle_ok & bar5_bear)
+        .fill_null(False)
+        .alias(  # type: ignore[possibly-undefined]
+            "falling_three_methods"
+        )
+    )

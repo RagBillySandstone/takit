@@ -3,16 +3,19 @@ Volume and price-volume indicators.
 
 Functions
 ---------
-vwap         Session-anchored Volume Weighted Average Price
-vwap_bands   VWAP with ±1σ / ±2σ standard-deviation bands
-obv          On-Balance Volume (running signed cumulative volume)
-ad_line      Accumulation/Distribution Line (volume-weighted cumulative flow)
-kvo          Klinger Volume Oscillator (trend-aligned cumulative volume force)
-eom          Ease of Movement (price change relative to volume pressure)
-pvt          Price Volume Trend (cumulative volume scaled by % price change)
-force_index  Elder's Force Index — EMA of signed price-change × volume
-nvi          Negative Volume Index — cumulates price change on falling-volume days
-pvi          Positive Volume Index — cumulates price change on rising-volume days
+vwap            Session-anchored Volume Weighted Average Price
+vwap_bands      VWAP with ±1σ / ±2σ standard-deviation bands
+obv             On-Balance Volume (running signed cumulative volume)
+ad_line         Accumulation/Distribution Line (volume-weighted cumulative flow)
+kvo             Klinger Volume Oscillator (trend-aligned cumulative volume force)
+eom             Ease of Movement (price change relative to volume pressure)
+pvt             Price Volume Trend (cumulative volume scaled by % price change)
+force_index     Elder's Force Index — EMA of signed price-change × volume
+nvi             Negative Volume Index — cumulates price change on falling-volume days
+pvi             Positive Volume Index — cumulates price change on rising-volume days
+chaikin_osc     Chaikin Oscillator — EMA difference of the A/D Line
+volume_oscillator Volume Oscillator — percentage difference of two volume EMAs
+twap            Time-Weighted Average Price (cumulative or rolling equal-weight)
 """
 
 from __future__ import annotations
@@ -622,3 +625,126 @@ def pvi(ohlc_vol: pl.DataFrame) -> pl.Series:
             result[i] = result[i - 1]
 
     return pl.Series("pvi", result, dtype=pl.Float64)
+
+
+# ---------------------------------------------------------------------------
+# Chaikin Oscillator
+# ---------------------------------------------------------------------------
+
+
+def chaikin_osc(
+    ohlc_vol: pl.DataFrame,
+    fast: int = 3,
+    slow: int = 10,
+) -> pl.Series:
+    """Chaikin Oscillator — EMA divergence of the Accumulation/Distribution Line.
+
+    The Chaikin Oscillator (Marc Chaikin) applies MACD-style EMA differencing
+    to the A/D Line to measure momentum of money flow.  Values above zero
+    indicate accumulation; below zero indicate distribution.
+
+        ChaikinOsc = EMA(AD_Line, fast) − EMA(AD_Line, slow)
+
+    Null-prefix: ``slow − 1`` bars.
+
+    Args:
+        ohlc_vol: DataFrame with columns ``high``, ``low``, ``close``, ``volume``.
+        fast: Fast EMA period (default 3).
+        slow: Slow EMA period (default 10).
+
+    Returns:
+        Series named ``chaikin_osc``.
+
+    Raises:
+        ValueError: If ``fast >= slow``.
+    """
+    if fast >= slow:
+        raise ValueError(f"Chaikin Oscillator fast ({fast}) must be less than slow ({slow}).")
+
+    adl = ad_line(ohlc_vol)
+    return (ema(adl, fast) - ema(adl, slow)).alias("chaikin_osc")
+
+
+# ---------------------------------------------------------------------------
+# Volume Oscillator
+# ---------------------------------------------------------------------------
+
+
+def volume_oscillator(
+    volume: pl.Series,
+    fast: int = 5,
+    slow: int = 10,
+) -> pl.Series:
+    """Volume Oscillator — percentage difference between two volume EMAs.
+
+    Measures volume momentum by comparing a fast EMA of volume to a slow EMA.
+    Positive values confirm price moves with rising volume; negative values
+    suggest weakening volume that may precede a reversal.
+
+        VO = 100 × (EMA(volume, fast) − EMA(volume, slow)) / EMA(volume, slow)
+
+    Null-prefix: ``slow − 1`` bars.
+
+    Args:
+        volume: Volume series.
+        fast: Fast EMA period (default 5).
+        slow: Slow EMA period (default 10).
+
+    Returns:
+        Series named ``vol_osc``.
+
+    Raises:
+        ValueError: If ``fast >= slow``.
+    """
+    if fast >= slow:
+        raise ValueError(f"Volume Oscillator fast ({fast}) must be less than slow ({slow}).")
+
+    v = volume.cast(pl.Float64)
+    fast_ema = ema(v, fast)
+    slow_ema = ema(v, slow)
+
+    # fill_nan handles the rare case where slow EMA is zero.
+    return (100.0 * (fast_ema - slow_ema) / slow_ema).fill_nan(None).alias("vol_osc")
+
+
+# ---------------------------------------------------------------------------
+# TWAP
+# ---------------------------------------------------------------------------
+
+
+def twap(
+    ohlc_vol: pl.DataFrame,
+    period: int | None = None,
+) -> pl.Series:
+    """Time-Weighted Average Price — equal-weight rolling or cumulative average.
+
+    TWAP weights each time bar equally, regardless of volume.  In the rolling
+    form (``period`` specified), it is the SMA of the typical price.  In the
+    cumulative form (``period=None``), it is the running mean from bar 0.
+
+        typical_price = (high + low + close) / 3
+        TWAP (rolling)    = SMA(typical_price, period)
+        TWAP (cumulative) = cumsum(typical_price) / bar_count
+
+    Null-prefix (rolling):    ``period − 1`` bars.
+    Null-prefix (cumulative): 0 bars.
+
+    Args:
+        ohlc_vol: DataFrame with columns ``high``, ``low``, ``close``.
+        period: Rolling window length; ``None`` for cumulative from bar 0 (default None).
+
+    Returns:
+        Series named ``twap_{period}`` (rolling) or ``twap`` (cumulative).
+
+    Raises:
+        ValueError: If ``period`` is specified and ``< 1``.
+    """
+    tp = (ohlc_vol["high"] + ohlc_vol["low"] + ohlc_vol["close"]) / 3.0
+
+    if period is None:
+        # Cumulative average: sum(tp) / number of bars seen so far.
+        count = pl.Series(list(range(1, len(tp) + 1)), dtype=pl.Float64)
+        return (tp.cum_sum() / count).alias("twap")
+
+    _validate_period(period, "TWAP")
+    return tp.rolling_mean(window_size=period, min_samples=period).alias(f"twap_{period}")

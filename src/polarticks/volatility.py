@@ -21,6 +21,9 @@ parkinson             High-Low range-based volatility estimator (Parkinson 1980)
 garman_klass          OHLC volatility estimator accounting for open-close drift
 yang_zhang            Overnight-adjusted OHLC volatility estimator (Yang-Zhang 2000)
 williams_vix_fix      Synthetic fear gauge: rolling-high distance from low
+choppiness_index      Choppiness Index — trending vs. choppy regime quantifier
+squeeze_momentum      TTM Squeeze — BB/KC compression detector with momentum histogram
+volatility_ratio      Volatility Ratio — current True Range vs. its n-period maximum
 """
 
 from __future__ import annotations
@@ -685,3 +688,180 @@ def williams_vix_fix(ohlc: pl.DataFrame, period: int = 22) -> pl.Series:
 
     # fill_nan guards against a theoretical zero highest-close edge case.
     return (100.0 * (highest_close - low) / highest_close).fill_nan(None).alias(f"wvf_{period}")
+
+
+# ---------------------------------------------------------------------------
+# Choppiness Index
+# ---------------------------------------------------------------------------
+
+
+def choppiness_index(ohlc: pl.DataFrame, period: int = 14) -> pl.Series:
+    """Choppiness Index — quantifies trending versus choppy market conditions.
+
+    CHOP (Dreiss) measures whether the market is trending or oscillating.
+    Values approaching 100 indicate maximum choppiness (sideways/consolidating);
+    values approaching the theoretical lower bound indicate a strong trend.
+    The conventional thresholds are: above 61.8 (choppy), below 38.2 (trending).
+
+    Algorithm:
+        CHOP = 100 × log10(Σ TR(1), period) / (highest_high − lowest_low))
+                   / log10(period)
+
+    Null-prefix: ``period − 1`` bars.
+
+    Args:
+        ohlc: DataFrame with columns ``high``, ``low``, ``close``.
+        period: Lookback window (default 14; must be ≥ 2).
+
+    Returns:
+        Series named ``chop_{period}``.
+
+    Raises:
+        ValueError: If ``period < 2``.
+    """
+    _validate_period(period, "Choppiness Index", min_period=2)
+
+    # True range of each individual bar (ATR period = 1).
+    tr = true_range(ohlc)
+    atr_sum = tr.rolling_sum(window_size=period, min_samples=period)
+
+    highest_high = ohlc["high"].rolling_max(window_size=period, min_samples=period)
+    lowest_low = ohlc["low"].rolling_min(window_size=period, min_samples=period)
+    hl_range = highest_high - lowest_low
+
+    # fill_nan handles perfectly flat markets where the range is zero.
+    ratio = (atr_sum / hl_range).fill_nan(1.0)
+    log_period = math.log10(period)
+
+    # log10(ratio) via change-of-base: log(x)/log(10).
+    return (100.0 * ratio.log(base=math.e) / (log_period * math.log(10))).alias(f"chop_{period}")
+
+
+# ---------------------------------------------------------------------------
+# Squeeze Momentum
+# ---------------------------------------------------------------------------
+
+
+def squeeze_momentum(
+    ohlc: pl.DataFrame,
+    length: int = 20,
+    bb_mult: float = 2.0,
+    kc_mult: float = 1.5,
+) -> pl.DataFrame:
+    """TTM Squeeze — Bollinger/Keltner compression detector with momentum histogram.
+
+    The Squeeze Momentum Indicator (Carter / Lazybear TTM Squeeze) detects
+    periods of market consolidation ("squeeze") by checking when Bollinger
+    Bands are entirely inside Keltner Channels.  The subsequent breakout
+    direction is forecast by a linear-regression momentum histogram.
+
+    Algorithm:
+        BB:     ±bb_mult × std around SMA(close, length)
+        KC:     ±kc_mult × ATR(length) around EMA(close, length)
+        sqz_on  = (bb_upper < kc_upper) AND (bb_lower > kc_lower)
+        sqz_off = (bb_upper ≥ kc_upper) AND (bb_lower ≤ kc_lower)
+        mid     = (rolling_max(high, length) + rolling_min(low, length)) / 2
+        delta   = close − (mid + SMA(close, length)) / 2
+        momentum = linreg_value(delta, length)  [value at end of rolling window]
+
+    Null-prefix: ``length − 1`` bars.
+
+    Args:
+        ohlc: DataFrame with columns ``high``, ``low``, ``close``.
+        length: Lookback period for BB, KC, and linreg (default 20).
+        bb_mult: BB standard-deviation multiplier (default 2.0).
+        kc_mult: KC ATR multiplier (default 1.5).
+
+    Returns:
+        DataFrame with columns ``sqz_on`` (bool), ``sqz_off`` (bool),
+        ``sqz_momentum`` (float).
+
+    Raises:
+        ValueError: If ``length < 2``.
+    """
+    _validate_period(length, "Squeeze Momentum", min_period=2)
+
+    high = ohlc["high"]
+    low = ohlc["low"]
+    close = ohlc["close"]
+
+    # Bollinger Bands around SMA.
+    mid_sma = close.rolling_mean(window_size=length, min_samples=length)
+    std = close.rolling_std(window_size=length, min_samples=length)
+    bb_upper = mid_sma + bb_mult * std
+    bb_lower = mid_sma - bb_mult * std
+
+    # Keltner Channels around EMA using ATR for width.
+    kc_mid = ema(close, length)
+    kc_range = atr(ohlc, length) * kc_mult
+    kc_upper = kc_mid + kc_range
+    kc_lower = kc_mid - kc_range
+
+    # Squeeze flags.
+    sqz_on = (bb_upper < kc_upper) & (bb_lower > kc_lower)
+    sqz_off = (bb_upper >= kc_upper) & (bb_lower <= kc_lower)
+
+    # Momentum: linreg value of delta from bar midpoint.
+    highest = high.rolling_max(window_size=length, min_samples=length)
+    lowest = low.rolling_min(window_size=length, min_samples=length)
+    delta = close - (highest + lowest) / 2.0 - mid_sma
+
+    # Linear regression value at the end of each window via rolling_map.
+    def _lrv(w: pl.Series) -> float:
+        """Fit OLS to the window and return the predicted value at the last bar."""
+        n = len(w)
+        vals = w.to_list()
+        mean_y = sum(vals) / n
+        mean_x = (n - 1) / 2.0
+        ss_xx = sum((i - mean_x) ** 2 for i in range(n))
+        if ss_xx == 0.0:
+            return mean_y
+        slope = sum((i - mean_x) * (vals[i] - mean_y) for i in range(n)) / ss_xx
+        # Predicted value at x = n-1 = mean_y + slope*(n-1)/2.
+        return mean_y + slope * (n - 1 - mean_x)
+
+    momentum = delta.rolling_map(function=_lrv, window_size=length, min_samples=length)
+
+    return pl.DataFrame(
+        {
+            "sqz_on": sqz_on.fill_null(False),
+            "sqz_off": sqz_off.fill_null(False),
+            "sqz_momentum": momentum,
+        }
+    )
+
+
+# ---------------------------------------------------------------------------
+# Volatility Ratio
+# ---------------------------------------------------------------------------
+
+
+def volatility_ratio(ohlc: pl.DataFrame, period: int = 14) -> pl.Series:
+    """Volatility Ratio — current True Range as a fraction of its n-period maximum.
+
+    Measures how the current bar's True Range compares to its maximum over
+    the lookback period.  Values close to 1 indicate unusually wide-range bars
+    (potential breakout bars); values close to 0 indicate narrow-range bars
+    (low volatility / inside-bar environment).
+
+        VR = true_range / rolling_max(true_range, period)
+
+    Null-prefix: ``period − 1`` bars.
+
+    Args:
+        ohlc: DataFrame with columns ``high``, ``low``, ``close``.
+        period: Lookback window (default 14).
+
+    Returns:
+        Series named ``vol_ratio_{period}``.
+
+    Raises:
+        ValueError: If ``period < 1``.
+    """
+    _validate_period(period, "Volatility Ratio")
+
+    tr = true_range(ohlc)
+    max_tr = tr.rolling_max(window_size=period, min_samples=period)
+
+    # fill_nan handles the rare case where the rolling maximum is zero (flat market).
+    return (tr / max_tr).fill_nan(1.0).alias(f"vol_ratio_{period}")

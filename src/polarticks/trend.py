@@ -13,6 +13,11 @@ vortex              Vortex Indicator — VI+ and VI− directional-movement line
 linreg_slope        Rolling linear regression slope coefficient
 stc                 Schaff Trend Cycle — stochastic of MACD for cycle detection
 elder_ray           Elder Ray Index — Bull Power and Bear Power vs EMA
+alligator           Bill Williams Alligator — three offset Wilder-smoothed lines
+fractal             Williams Fractal — 5-bar pivot high and pivot low detector
+linreg_channel      Rolling linear regression channel with RMSE-based bands
+tsf                 Time Series Forecast — linreg projected one bar ahead
+chande_kroll_stop   Chande Kroll Stop — two-stage ATR trailing stop
 """
 
 from __future__ import annotations
@@ -740,3 +745,279 @@ def elder_ray(ohlc: pl.DataFrame, period: int = 13) -> pl.DataFrame:
     bear_power = (ohlc["low"] - ema_close).alias("bear_power")
 
     return pl.DataFrame({"bull_power": bull_power, "bear_power": bear_power})
+
+
+# ---------------------------------------------------------------------------
+# Alligator
+# ---------------------------------------------------------------------------
+
+
+def alligator(
+    ohlc: pl.DataFrame,
+    jaw_period: int = 13,
+    jaw_offset: int = 8,
+    teeth_period: int = 8,
+    teeth_offset: int = 5,
+    lips_period: int = 5,
+    lips_offset: int = 3,
+) -> pl.DataFrame:
+    """Bill Williams Alligator — three offset Wilder-smoothed median-price lines.
+
+    The Alligator represents a sleeping, awakening, or eating market via three
+    Wilder-smoothed lines of the median price ``(high + low) / 2``, each
+    displaced backward by an offset (simulating the TradingView future-shift
+    convention on historical data):
+
+        jaw   = Wilder(median, jaw_period).shift(jaw_offset)
+        teeth = Wilder(median, teeth_period).shift(teeth_offset)
+        lips  = Wilder(median, lips_period).shift(lips_offset)
+
+    When the lines are intertwined the market is "sleeping".  When lips > teeth
+    > jaw the market is bullish; jaw > teeth > lips is bearish.
+
+    Null-prefix: ``jaw_period + jaw_offset − 2`` bars (slowest line dominates).
+
+    Args:
+        ohlc: DataFrame with columns ``high`` and ``low``.
+        jaw_period: Wilder period for the jaw / blue line (default 13).
+        jaw_offset: Bars to shift the jaw backward (default 8).
+        teeth_period: Wilder period for the teeth / red line (default 8).
+        teeth_offset: Bars to shift the teeth backward (default 5).
+        lips_period: Wilder period for the lips / green line (default 5).
+        lips_offset: Bars to shift the lips backward (default 3).
+
+    Returns:
+        DataFrame with columns ``jaw``, ``teeth``, ``lips``.
+
+    Raises:
+        ValueError: If any period or offset < 1.
+    """
+    for val, name in [
+        (jaw_period, "jaw_period"),
+        (teeth_period, "teeth_period"),
+        (lips_period, "lips_period"),
+    ]:
+        _validate_period(val, f"Alligator {name}")
+
+    # Median price used by Bill Williams as the Alligator input.
+    median = (ohlc["high"] + ohlc["low"]) / 2.0
+
+    # shift(n) displaces the smoothed line backward n bars in the historical axis.
+    jaw = wilder_smooth(median, jaw_period).shift(jaw_offset).alias("jaw")
+    teeth = wilder_smooth(median, teeth_period).shift(teeth_offset).alias("teeth")
+    lips = wilder_smooth(median, lips_period).shift(lips_offset).alias("lips")
+
+    return pl.DataFrame({"jaw": jaw, "teeth": teeth, "lips": lips})
+
+
+# ---------------------------------------------------------------------------
+# Fractal
+# ---------------------------------------------------------------------------
+
+
+def fractal(ohlc: pl.DataFrame) -> pl.DataFrame:
+    """Williams Fractal — 5-bar pivot high and pivot low pattern detector.
+
+    A bearish fractal occurs when a bar's high is strictly higher than the
+    two bars immediately before and after it.  A bullish fractal occurs when
+    a bar's low is strictly lower.  The first two and last two bars can never
+    host a fractal (they lack the required neighbours).
+
+    Algorithm:
+        bearish[t] = high[t] > high[t−1] AND high[t] > high[t−2]
+                     AND high[t] > high[t+1] AND high[t] > high[t+2]
+        bullish[t] = low[t]  < low[t−1]  AND low[t]  < low[t−2]
+                     AND low[t]  < low[t+1]  AND low[t]  < low[t+2]
+
+    Args:
+        ohlc: DataFrame with columns ``high`` and ``low``.
+
+    Returns:
+        DataFrame with boolean columns ``fractal_bearish`` and ``fractal_bullish``.
+        The first 2 and last 2 bars are always ``False``.
+    """
+    high = ohlc["high"]
+    low = ohlc["low"]
+
+    # A bearish fractal: current high is strictly greater than all four neighbours.
+    bearish = (
+        (
+            (high > high.shift(2))
+            & (high > high.shift(1))
+            & (high > high.shift(-1))
+            & (high > high.shift(-2))
+        )
+        .fill_null(False)
+        .alias("fractal_bearish")
+    )
+
+    # A bullish fractal: current low is strictly lower than all four neighbours.
+    bullish = (
+        (
+            (low < low.shift(2))
+            & (low < low.shift(1))
+            & (low < low.shift(-1))
+            & (low < low.shift(-2))
+        )
+        .fill_null(False)
+        .alias("fractal_bullish")
+    )
+
+    return pl.DataFrame({"fractal_bearish": bearish, "fractal_bullish": bullish})
+
+
+# ---------------------------------------------------------------------------
+# Linear Regression Channel
+# ---------------------------------------------------------------------------
+
+
+def linreg_channel(
+    series: pl.Series,
+    period: int = 100,
+    num_std: float = 2.0,
+) -> pl.DataFrame:
+    """Rolling linear regression channel — fitted line with RMSE-based bands.
+
+    At each bar, fits an OLS line to the last *period* bars and returns:
+        - the fitted (LinReg) value at the end of the window (``lrc_mid``),
+        - upper and lower bands at ``num_std`` × RMSE above/below the line.
+
+    Algorithm (vectorised):
+        slope = linreg_slope(series, period)
+        mid   = rolling_mean + slope × (period − 1) / 2
+        SSE   = rolling_sample_var × (period − 1) − slope² × Σ(x − mean_x)²
+        RMSE  = sqrt(SSE / period)
+        upper = mid + num_std × RMSE
+        lower = mid − num_std × RMSE
+
+    Null-prefix: ``period − 1`` bars.
+
+    Args:
+        series: Input price series (e.g., close).
+        period: Lookback window for each regression fit (default 100).
+        num_std: Number of RMSE widths for the upper/lower bands (default 2.0).
+
+    Returns:
+        DataFrame with columns ``lrc_mid``, ``lrc_upper``, ``lrc_lower``.
+
+    Raises:
+        ValueError: If ``period < 2``.
+    """
+    _validate_period(period, "Linear Regression Channel", min_period=2)
+
+    n = period
+    slope = linreg_slope(series, n)
+    mean_y = series.rolling_mean(window_size=n, min_samples=n)
+
+    # LinReg value at x = n-1: mean_y + slope × (n-1)/2.
+    mid = (mean_y + slope * (n - 1) / 2.0).alias("lrc_mid")
+
+    # RMSE via the algebraic decomposition of residual sum of squares.
+    ss_xx = n * (n**2 - 1) / 12.0  # Σ(x_i - mean_x)² for x = 0..n-1
+    sample_var = series.rolling_std(window_size=n, min_samples=n) ** 2
+    # SSE = TSS - SSR = sample_var*(n-1) - slope²*ss_xx; clip to avoid sqrt of negative.
+    sse = (sample_var * (n - 1) - slope**2 * ss_xx).clip(lower_bound=0.0)
+    rmse = (sse / n) ** 0.5
+
+    upper = (mid + num_std * rmse).alias("lrc_upper")
+    lower = (mid - num_std * rmse).alias("lrc_lower")
+
+    return pl.DataFrame({"lrc_mid": mid, "lrc_upper": upper, "lrc_lower": lower})
+
+
+# ---------------------------------------------------------------------------
+# Time Series Forecast
+# ---------------------------------------------------------------------------
+
+
+def tsf(series: pl.Series, period: int = 14) -> pl.Series:
+    """Time Series Forecast — rolling OLS line projected one bar ahead.
+
+    TSF extends the rolling linear regression by one step beyond the window,
+    providing a one-bar-ahead projection.  It is equivalent to the LinReg
+    value at the end of the window plus one slope increment:
+
+        LinReg_value[t] = rolling_mean + slope × (period − 1) / 2
+        TSF[t]          = LinReg_value[t] + slope[t]
+
+    Null-prefix: ``period − 1`` bars.
+
+    Args:
+        series: Input price series (e.g., close).
+        period: Lookback window (default 14; must be ≥ 2).
+
+    Returns:
+        Series named ``tsf_{period}``.
+
+    Raises:
+        ValueError: If ``period < 2``.
+    """
+    _validate_period(period, "TSF", min_period=2)
+
+    n = period
+    slope = linreg_slope(series, n)
+    mean_y = series.rolling_mean(window_size=n, min_samples=n)
+
+    # LinReg value at end of window, then projected one step further.
+    lrv = mean_y + slope * (n - 1) / 2.0
+    return (lrv + slope).alias(f"tsf_{period}")
+
+
+# ---------------------------------------------------------------------------
+# Chande Kroll Stop
+# ---------------------------------------------------------------------------
+
+
+def chande_kroll_stop(
+    ohlc: pl.DataFrame,
+    atr_period: int = 10,
+    atr_mult: float = 1.5,
+    stop_period: int = 9,
+) -> pl.DataFrame:
+    """Chande Kroll Stop — two-stage ATR-based adaptive trailing stop.
+
+    The Chande Kroll Stop (Chande & Kroll, 1994) combines an ATR-displaced
+    first-stage stop with a second rolling extreme to produce smooth long and
+    short stop-loss levels.  A close above ``cks_long`` is bullish; a close
+    below ``cks_short`` is bearish.
+
+    Algorithm:
+        first_high = rolling_max(high, atr_period) − atr_mult × ATR(atr_period)
+        first_low  = rolling_min(low,  atr_period) + atr_mult × ATR(atr_period)
+        cks_long   = rolling_max(first_low,  stop_period)
+        cks_short  = rolling_min(first_high, stop_period)
+
+    Null-prefix: ``atr_period + stop_period − 2`` bars.
+
+    Args:
+        ohlc: DataFrame with columns ``high``, ``low``, ``close``.
+        atr_period: ATR and first-stage rolling window period (default 10).
+        atr_mult: ATR multiplier for the first-stage stop (default 1.5).
+        stop_period: Second-stage rolling window for the final stop (default 9).
+
+    Returns:
+        DataFrame with columns ``cks_long`` and ``cks_short``.
+
+    Raises:
+        ValueError: If ``atr_period < 1`` or ``stop_period < 1``.
+    """
+    _validate_period(atr_period, "Chande Kroll Stop atr_period")
+    _validate_period(stop_period, "Chande Kroll Stop stop_period")
+
+    atr_vals = atr(ohlc, atr_period)
+
+    # First-stage: displace rolling extremes by the ATR cushion.
+    highest_high = ohlc["high"].rolling_max(window_size=atr_period, min_samples=atr_period)
+    lowest_low = ohlc["low"].rolling_min(window_size=atr_period, min_samples=atr_period)
+    first_high_stop = highest_high - atr_mult * atr_vals
+    first_low_stop = lowest_low + atr_mult * atr_vals
+
+    # Second-stage: smooth the first-stage stops with a rolling extreme.
+    cks_long = first_low_stop.rolling_max(window_size=stop_period, min_samples=stop_period).alias(
+        "cks_long"
+    )
+    cks_short = first_high_stop.rolling_min(window_size=stop_period, min_samples=stop_period).alias(
+        "cks_short"
+    )
+
+    return pl.DataFrame({"cks_long": cks_long, "cks_short": cks_short})
