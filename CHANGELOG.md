@@ -7,6 +7,47 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [0.6.0] — 2026-05-20
+
+### Added
+
+#### Moving Averages
+- `ehma(series, period)` — Exponential Hull Moving Average; uses EMA instead of WMA for hull computation; `period − 1` leading nulls
+- `pwma(series, period)` — Pascal's Triangle Weighted Moving Average; coefficients from Pascal's triangle row
+
+#### Momentum
+- `disparity_index(series, period=14)` — percentage deviation of close from its SMA
+- `apo(series, fast=12, slow=26)` — Absolute Price Oscillator; difference of two EMAs
+- `asi(ohlc, limit_move=1.0)` — Accumulation Swing Index; Wilder's directional swing metric
+- `pmo(series, first_period=35, second_period=20, signal_period=10)` — Price Momentum Oscillator; double-smoothed ROC
+- `chande_trend_score(series, periods=(7, 14, 21, 28, 35, 42, 49, 56, 63, 70))` — count of positive ROC periods
+
+#### Trend
+- `ma_envelope(series, period=20, pct=0.025)` — Moving Average Envelope; upper/lower bands offset by a percentage
+- `linreg_intercept(series, period=14)` — Rolling linear regression intercept
+- `standard_error_bands(series, period=14, num_std=2.0)` — LinReg line ± standard error bands; returns 3-column DataFrame
+- `cog(series, period=10)` — Center of Gravity oscillator; weighted mean lag
+- `rwi(ohlc, period=14)` — Random Walk Index; measures deviation from a random walk
+
+#### Volatility
+- `coefficient_of_variation(series, period=14)` — rolling CV; std / mean × 100
+- `efficiency_ratio(series, period=10)` — Kaufman's Efficiency Ratio; directional movement / total path
+- `standard_error(series, period=14)` — rolling standard error of the regression line
+
+#### Volume
+- `vzo(ohlc_vol, period=14)` — Volume Zone Oscillator; EMA-smoothed signed volume ratio
+- `mfi_bw(ohlc_vol, period=14)` — Bandwidth-adjusted Money Flow Index variant
+- `volume_delta(ohlc_vol)` — Per-bar directional volume proxy (buy − sell estimate)
+
+#### Candlestick Patterns
+- `is_marubozu_bullish(ohlc, ...)` — Bullish Marubozu; full-body candle with minimal or no wicks
+- `is_marubozu_bearish(ohlc, ...)` — Bearish Marubozu; full-body bearish candle with minimal wicks
+
+### Tests
+- 147 new unit tests in `test_v06_indicators.py` (1095 total)
+
+---
+
 ## [0.5.0] — 2026-05-20
 
 ### Added

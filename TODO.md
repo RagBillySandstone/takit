@@ -154,8 +154,45 @@
 
 ---
 
+## New indicators (v0.6.0 roadmap)
+
+### Moving averages
+- [x] **EHMA** (`ehma`) — Exponential Hull Moving Average; EMA-based hull variant.
+- [x] **PWMA** (`pwma`) — Pascal's Triangle Weighted Moving Average.
+
+### Momentum / oscillators
+- [x] **Disparity Index** (`disparity_index`) — % deviation of close from SMA.
+- [x] **APO** (`apo`) — Absolute Price Oscillator; difference of two EMAs.
+- [x] **ASI** (`asi`) — Accumulation Swing Index; Wilder's directional swing metric.
+- [x] **PMO** (`pmo`) — Price Momentum Oscillator; double-smoothed ROC with signal.
+- [x] **Chande Trend Score** (`chande_trend_score`) — count of positive ROC across multiple periods.
+
+### Trend
+- [x] **MA Envelope** (`ma_envelope`) — SMA ± percentage offset bands.
+- [x] **LinReg Intercept** (`linreg_intercept`) — Rolling linear regression intercept.
+- [x] **Standard Error Bands** (`standard_error_bands`) — LinReg ± standard error channel.
+- [x] **COG** (`cog`) — Center of Gravity oscillator.
+- [x] **RWI** (`rwi`) — Random Walk Index; trend vs. random walk test.
+
+### Volatility
+- [x] **Coefficient of Variation** (`coefficient_of_variation`) — rolling std / mean × 100.
+- [x] **Efficiency Ratio** (`efficiency_ratio`) — Kaufman directional efficiency ratio.
+- [x] **Standard Error** (`standard_error`) — rolling regression standard error.
+
+### Volume
+- [x] **VZO** (`vzo`) — Volume Zone Oscillator.
+- [x] **MFI_BW** (`mfi_bw`) — Bandwidth-adjusted MFI variant.
+- [x] **Volume Delta** (`volume_delta`) — per-bar directional volume proxy.
+
+### Candlestick patterns
+- [x] **Marubozu Bullish** (`is_marubozu_bullish`) — full-body bullish candle with minimal wicks.
+- [x] **Marubozu Bearish** (`is_marubozu_bearish`) — full-body bearish candle with minimal wicks.
+
+---
+
 ## Packaging
 - [x] **PyPI release** — bump to `0.1.0`, write `CHANGELOG.md`, publish to PyPI.
 - [x] **Benchmark suite** — `tests/benchmark/` using `pytest-benchmark` to track performance on a 100k-bar series across all indicators.
 - [x] **`py.typed` marker** — already present; verify downstream mypy usage works end-to-end.
 - [x] **Bump to v0.5.0** — update `pyproject.toml` version, add CHANGELOG entry, publish to PyPI.
+- [x] **Bump to v0.6.0** — update `pyproject.toml` version, add CHANGELOG entry, publish to PyPI.
