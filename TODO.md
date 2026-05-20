@@ -158,4 +158,4 @@
 - [x] **PyPI release** — bump to `0.1.0`, write `CHANGELOG.md`, publish to PyPI.
 - [x] **Benchmark suite** — `tests/benchmark/` using `pytest-benchmark` to track performance on a 100k-bar series across all indicators.
 - [x] **`py.typed` marker** — already present; verify downstream mypy usage works end-to-end.
-- [ ] **Bump to v0.5.0** — update `pyproject.toml` version, add CHANGELOG entry, publish to PyPI.
+- [x] **Bump to v0.5.0** — update `pyproject.toml` version, add CHANGELOG entry, publish to PyPI.
