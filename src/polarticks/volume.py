@@ -3,19 +3,22 @@ Volume and price-volume indicators.
 
 Functions
 ---------
-vwap            Session-anchored Volume Weighted Average Price
-vwap_bands      VWAP with ±1σ / ±2σ standard-deviation bands
-obv             On-Balance Volume (running signed cumulative volume)
-ad_line         Accumulation/Distribution Line (volume-weighted cumulative flow)
-kvo             Klinger Volume Oscillator (trend-aligned cumulative volume force)
-eom             Ease of Movement (price change relative to volume pressure)
-pvt             Price Volume Trend (cumulative volume scaled by % price change)
-force_index     Elder's Force Index — EMA of signed price-change × volume
-nvi             Negative Volume Index — cumulates price change on falling-volume days
-pvi             Positive Volume Index — cumulates price change on rising-volume days
-chaikin_osc     Chaikin Oscillator — EMA difference of the A/D Line
+vwap              Session-anchored Volume Weighted Average Price
+vwap_bands        VWAP with ±1σ / ±2σ standard-deviation bands
+obv               On-Balance Volume (running signed cumulative volume)
+ad_line           Accumulation/Distribution Line (volume-weighted cumulative flow)
+kvo               Klinger Volume Oscillator (trend-aligned cumulative volume force)
+eom               Ease of Movement (price change relative to volume pressure)
+pvt               Price Volume Trend (cumulative volume scaled by % price change)
+force_index       Elder's Force Index — EMA of signed price-change × volume
+nvi               Negative Volume Index — cumulates price change on falling-volume days
+pvi               Positive Volume Index — cumulates price change on rising-volume days
+chaikin_osc       Chaikin Oscillator — EMA difference of the A/D Line
 volume_oscillator Volume Oscillator — percentage difference of two volume EMAs
-twap            Time-Weighted Average Price (cumulative or rolling equal-weight)
+twap              Time-Weighted Average Price (cumulative or rolling equal-weight)
+rvol              Relative Volume — current volume relative to its rolling average
+obv_osc           OBV Oscillator — EMA spread of On-Balance Volume
+volume_roc        Volume Rate of Change — percentage change in trading volume
 """
 
 from __future__ import annotations
@@ -748,3 +751,131 @@ def twap(
 
     _validate_period(period, "TWAP")
     return tp.rolling_mean(window_size=period, min_samples=period).alias(f"twap_{period}")
+
+
+# ---------------------------------------------------------------------------
+# Relative Volume (RVOL)
+# ---------------------------------------------------------------------------
+
+
+def rvol(ohlc_vol: pl.DataFrame, period: int = 20) -> pl.Series:
+    """Relative Volume — current volume relative to its rolling SMA.
+
+    RVOL normalises the current bar's volume by the simple moving average of
+    volume over the last *period* bars, producing a dimensionless ratio.
+    Values above 1.0 indicate above-average activity; values below 1.0
+    indicate below-average activity.  Spikes in RVOL often accompany
+    breakouts or news-driven moves.
+
+    Algorithm:
+        avg_vol[t] = SMA(volume, period)
+        RVOL[t]    = volume[t] / avg_vol[t]
+
+    Null-prefix: ``period − 1`` bars.
+
+    Args:
+        ohlc_vol: DataFrame with a ``volume`` column.
+        period: Rolling SMA window for average volume (default 20).
+
+    Returns:
+        Series of RVOL values named ``rvol_{period}``.
+
+    Raises:
+        ValueError: If ``period < 1``.
+
+    References:
+        - Investopedia — Relative Volume:
+          https://www.investopedia.com/terms/r/relative-volume.asp
+    """
+    _validate_period(period, "RVOL")
+    vol = ohlc_vol["volume"]
+    avg_vol = vol.rolling_mean(window_size=period, min_samples=period)
+    safe_avg = avg_vol.replace(0.0, float("nan"))
+    return (vol / safe_avg).alias(f"rvol_{period}")
+
+
+# ---------------------------------------------------------------------------
+# OBV Oscillator
+# ---------------------------------------------------------------------------
+
+
+def obv_osc(ohlc_vol: pl.DataFrame, fast: int = 5, slow: int = 10) -> pl.Series:
+    """OBV Oscillator — EMA spread of On-Balance Volume.
+
+    The OBV Oscillator subtracts a slow EMA of OBV from a fast EMA of OBV,
+    producing a momentum-style histogram centred around zero.  Positive values
+    mean the fast EMA is above the slow EMA (accumulation accelerating);
+    negative values mean the slow EMA is dominant (distribution).  Zero
+    crossings are entry/exit signals.
+
+    Algorithm:
+        OBV[t]     = cumulative signed volume (see ``obv``)
+        fast_ema   = EMA(OBV, fast)
+        slow_ema   = EMA(OBV, slow)
+        OSC[t]     = fast_ema[t] − slow_ema[t]
+
+    Null-prefix: ``slow − 1`` bars.
+
+    Args:
+        ohlc_vol: DataFrame with columns ``close`` and ``volume``.
+        fast: Fast EMA period for OBV (default 5).
+        slow: Slow EMA period for OBV (default 10).
+
+    Returns:
+        Series of OBV Oscillator values named ``obv_osc_{fast}_{slow}``.
+
+    Raises:
+        ValueError: If ``fast < 1``, ``slow < 1``, or ``fast >= slow``.
+
+    References:
+        - Granville, J. *New Key to Stock Market Profits* (1963).
+        - Investopedia — On-Balance Volume (OBV):
+          https://www.investopedia.com/terms/o/onbalancevolume.asp
+    """
+    _validate_period(fast, "OBV Oscillator fast")
+    _validate_period(slow, "OBV Oscillator slow")
+    if fast >= slow:
+        raise ValueError(f"OBV Oscillator fast ({fast}) must be less than slow ({slow}).")
+    obv_vals = obv(ohlc_vol)
+    fast_ema = ema(obv_vals, fast)
+    slow_ema = ema(obv_vals, slow)
+    return (fast_ema - slow_ema).alias(f"obv_osc_{fast}_{slow}")
+
+
+# ---------------------------------------------------------------------------
+# Volume Rate of Change (VROC)
+# ---------------------------------------------------------------------------
+
+
+def volume_roc(ohlc_vol: pl.DataFrame, period: int = 14) -> pl.Series:
+    """Volume Rate of Change — percentage change in trading volume.
+
+    VROC measures how much the current bar's volume has changed relative to
+    the volume *period* bars ago, expressed as a percentage.  Surging VROC
+    confirms breakouts; declining VROC during a price move may signal weak
+    conviction.
+
+    Algorithm:
+        VROC[t] = (volume[t] − volume[t-period]) / volume[t-period] × 100
+
+    Null-prefix: ``period`` bars.
+
+    Args:
+        ohlc_vol: DataFrame with a ``volume`` column.
+        period: Lookback shift (default 14).
+
+    Returns:
+        Series of VROC values (%) named ``vroc_{period}``.
+
+    Raises:
+        ValueError: If ``period < 1``.
+
+    References:
+        - Investopedia — Rate of Change (ROC):
+          https://www.investopedia.com/terms/r/rateofchange.asp
+    """
+    _validate_period(period, "Volume ROC")
+    vol = ohlc_vol["volume"]
+    prev_vol = vol.shift(period)
+    safe_prev = prev_vol.replace(0.0, float("nan"))
+    return ((vol - prev_vol) / safe_prev * 100.0).alias(f"vroc_{period}")

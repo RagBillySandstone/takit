@@ -24,6 +24,8 @@ alma              Arnaud Legoux Moving Average (Gaussian-weighted rolling mean)
 var_mov_avg       Variable Moving Average     (signal/noise ER-adaptive smoothing)
 frama             Fractal Adaptive Moving Average (fractal-dimension adaptive smoothing)
 laguerre          Laguerre Filter             (four-element low-lag smoother, Ehlers)
+trima             Triangular Moving Average   (double-smoothed SMA; triangular weights)
+vidya             Variable Index Dynamic Average (CMO-adaptive EMA, Chande 1994)
 """
 
 from __future__ import annotations
@@ -931,3 +933,131 @@ def laguerre(series: pl.Series, gamma: float = 0.8) -> pl.Series:
         l0_prev, l1_prev, l2_prev, l3_prev = l0, l1, l2, l3
 
     return pl.Series(f"laguerre_{gamma:.4g}", output, dtype=pl.Float64)
+
+
+# ---------------------------------------------------------------------------
+# TRIMA
+# ---------------------------------------------------------------------------
+
+
+def trima(series: pl.Series, period: int) -> pl.Series:
+    """Triangular Moving Average — double-smoothed SMA with triangular weights.
+
+    TRIMA applies two sequential SMAs whose lengths sum to ``period + 1``,
+    so the combined warm-up is exactly ``period − 1`` bars (the standard
+    library null-prefix contract).  The triangular weighting approximates a
+    Gaussian smoothing kernel: the centre of the window receives the highest
+    effective weight, making TRIMA smoother than a single SMA of the same
+    length but slower to react to price changes.
+
+    Pass lengths (TA-Lib convention):
+        first_len  = period // 2 + 1
+        second_len = period − first_len + 1
+
+    Algorithm:
+        s1    = SMA(series, first_len)
+        TRIMA = SMA(s1,     second_len)
+
+    Null-prefix: ``period − 1`` bars.
+
+    Args:
+        series: Input price series.
+        period: Nominal lookback length (number of bars).
+
+    Returns:
+        Series of TRIMA values named ``trima_{period}``.
+        The first ``period − 1`` values are ``null``.
+
+    Raises:
+        ValueError: If ``period < 1``.
+
+    References:
+        - TA-Lib TRIMA: https://ta-lib.org/function.html#TRIMA
+        - Investopedia — Triangular Moving Average:
+          https://www.investopedia.com/terms/t/triangular-moving-average.asp
+    """
+    _validate_period(period, "TRIMA")
+    # Two-pass window lengths that satisfy first_len + second_len = period + 1,
+    # guaranteeing total warm-up of exactly period − 1 bars.
+    first_len = period // 2 + 1
+    second_len = period - first_len + 1
+    s1 = series.rolling_mean(window_size=first_len, min_samples=first_len)
+    return s1.rolling_mean(window_size=second_len, min_samples=second_len).alias(f"trima_{period}")
+
+
+# ---------------------------------------------------------------------------
+# VIDYA
+# ---------------------------------------------------------------------------
+
+
+def vidya(series: pl.Series, cmo_period: int = 9, alpha: float = 0.2) -> pl.Series:
+    """Variable Index Dynamic Average (VIDYA).
+
+    VIDYA is an adaptive EMA whose per-bar smoothing constant is scaled by a
+    *Volatility Index* (VI) derived from the absolute Chande Momentum
+    Oscillator (CMO).  In trending markets the absolute CMO is large and
+    VIDYA tracks price quickly; in choppy markets the CMO is near zero and
+    VIDYA barely moves.
+
+    Algorithm:
+        up[t]    = max(close[t] − close[t-1], 0)
+        dn[t]    = max(close[t-1] − close[t], 0)
+        sum_up   = rolling_sum(up, cmo_period)
+        sum_dn   = rolling_sum(dn, cmo_period)
+        VI[t]    = |sum_up − sum_dn| / (sum_up + sum_dn)   (range 0 to 1)
+        sc[t]    = alpha × VI[t]
+        VIDYA[t] = sc[t] × close[t] + (1 − sc[t]) × VIDYA[t-1]
+
+    The indicator is seeded at the first bar where VI is defined
+    (bar ``cmo_period``); the first ``cmo_period`` output values are ``null``.
+
+    Args:
+        series: Input price series (e.g., close).
+        cmo_period: Lookback for the CMO-based volatility index (default 9).
+        alpha: Base EMA smoothing factor multiplied by VI; must be in (0, 1]
+               (default 0.2).
+
+    Returns:
+        Series of VIDYA values named ``vidya_{cmo_period}``.
+        The first ``cmo_period`` values are ``null``.
+
+    Raises:
+        ValueError: If ``cmo_period < 1`` or ``alpha`` is outside (0, 1].
+
+    References:
+        - Chande, T. S. & Kroll, S. *The New Technical Trader* (1994), Chapter 3.
+        - Investopedia — VIDYA:
+          https://www.investopedia.com/terms/v/vidya.asp
+    """
+    _validate_period(cmo_period, "VIDYA")
+    if not (0.0 < alpha <= 1.0):
+        raise ValueError(f"VIDYA alpha must be in (0, 1]; got {alpha}.")
+
+    # Compute the Volatility Index (VI) via a CMO-derived ratio.
+    # diff[0] is null (no predecessor), so up/dn retain that null, which
+    # prevents the rolling sum from starting until cmo_period real changes exist.
+    diff = series.diff(1)
+    up = diff.clip(lower_bound=0.0)
+    dn = (-diff).clip(lower_bound=0.0)
+    sum_up = up.rolling_sum(window_size=cmo_period, min_samples=cmo_period)
+    sum_dn = dn.rolling_sum(window_size=cmo_period, min_samples=cmo_period)
+    total = sum_up + sum_dn
+    # When total == 0 both sums are zero → 0/0 = NaN → fill to 0 (no movement, freeze).
+    vi = ((sum_up - sum_dn).abs() / total).fill_nan(0.0)
+
+    raw: list[float | None] = series.to_list()
+    vi_list: list[float | None] = vi.to_list()
+    n = len(raw)
+    output: list[float | None] = [None] * n
+    prev: float | None = None
+
+    for i in range(n):
+        if vi_list[i] is None:
+            # Warm-up: VI not yet defined; leave output as null.
+            continue
+        sc = alpha * vi_list[i]  # type: ignore[operator]
+        # Seed at first valid bar; thereafter apply the adaptive smoothing.
+        prev = raw[i] if prev is None else sc * raw[i] + (1.0 - sc) * prev  # type: ignore[operator]
+        output[i] = prev
+
+    return pl.Series(f"vidya_{cmo_period}", output, dtype=pl.Float64)

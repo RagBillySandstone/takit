@@ -3,21 +3,26 @@ Trend-following indicators.
 
 Functions
 ---------
-donchian_channels   Highest high / lowest low channel over a rolling window
-adx                 Average Directional Index with +DI and -DI components
-supertrend          ATR-based trailing stop/trend indicator
-parabolic_sar       Parabolic SAR — acceleration-factor dot plot
-ichimoku            Ichimoku Cloud — five-component trend/support/resistance system
-aroon               Aroon Up/Down/Oscillator — time-since-extreme trend indicator
-vortex              Vortex Indicator — VI+ and VI− directional-movement lines
-linreg_slope        Rolling linear regression slope coefficient
-stc                 Schaff Trend Cycle — stochastic of MACD for cycle detection
-elder_ray           Elder Ray Index — Bull Power and Bear Power vs EMA
-alligator           Bill Williams Alligator — three offset Wilder-smoothed lines
-fractal             Williams Fractal — 5-bar pivot high and pivot low detector
-linreg_channel      Rolling linear regression channel with RMSE-based bands
-tsf                 Time Series Forecast — linreg projected one bar ahead
-chande_kroll_stop   Chande Kroll Stop — two-stage ATR trailing stop
+donchian_channels           Highest high / lowest low channel over a rolling window
+adx                         Average Directional Index with +DI and -DI components
+supertrend                  ATR-based trailing stop/trend indicator
+parabolic_sar               Parabolic SAR — acceleration-factor dot plot
+ichimoku                    Ichimoku Cloud — five-component trend/support/resistance system
+aroon                       Aroon Up/Down/Oscillator — time-since-extreme trend indicator
+vortex                      Vortex Indicator — VI+ and VI− directional-movement lines
+linreg_slope                Rolling linear regression slope coefficient
+stc                         Schaff Trend Cycle — stochastic of MACD for cycle detection
+elder_ray                   Elder Ray Index — Bull Power and Bear Power vs EMA
+alligator                   Bill Williams Alligator — three offset Wilder-smoothed lines
+fractal                     Williams Fractal — 5-bar pivot high and pivot low detector
+linreg_channel              Rolling linear regression channel with RMSE-based bands
+tsf                         Time Series Forecast — linreg projected one bar ahead
+chande_kroll_stop           Chande Kroll Stop — two-stage ATR trailing stop
+vhf                         Vertical Horizontal Filter — trending vs. ranging regime detector
+pfe                         Polarized Fractal Efficiency — EMA-smoothed path-efficiency × direction
+chande_forecast_oscillator  Chande Forecast Oscillator — % deviation of close from TSF
+linreg_r2                   Rolling linear regression R² (coefficient of determination)
+tii                         Trend Intensity Index — fraction of closes above/below the SMA
 """
 
 from __future__ import annotations
@@ -1021,3 +1026,270 @@ def chande_kroll_stop(
     )
 
     return pl.DataFrame({"cks_long": cks_long, "cks_short": cks_short})
+
+
+# ---------------------------------------------------------------------------
+# Vertical Horizontal Filter (VHF)
+# ---------------------------------------------------------------------------
+
+
+def vhf(series: pl.Series, period: int = 28) -> pl.Series:
+    """Vertical Horizontal Filter — trending vs. ranging regime quantifier.
+
+    VHF divides the total price range (highest − lowest) over the lookback
+    period by the sum of absolute bar-to-bar price changes over the same
+    window.  High VHF values (typically > 0.4) indicate a trending market;
+    low values (< 0.2) indicate a ranging/choppy market.  The oscillator
+    oscillates between 0 and 1 (assuming a monotone run corresponds to 1).
+
+    Algorithm:
+        highest[t]  = rolling_max(close, period)
+        lowest[t]   = rolling_min(close, period)
+        path_sum[t] = rolling_sum(|close[t] − close[t-1]|, period)
+        VHF[t]      = (highest[t] − lowest[t]) / path_sum[t]
+
+    Null-prefix: ``period`` bars (the diff adds one extra null at bar 0).
+
+    Args:
+        series: Close price series.
+        period: Lookback window (default 28).
+
+    Returns:
+        Series of VHF values named ``vhf_{period}``.
+
+    Raises:
+        ValueError: If ``period < 1``.
+
+    References:
+        - Schwager, J. D. *Schwager on Futures: Technical Analysis* (1996),
+          Chapter on the VHF.
+        - Investopedia — Vertical Horizontal Filter:
+          https://www.investopedia.com/terms/v/vhf.asp
+    """
+    _validate_period(period, "VHF")
+    highest = series.rolling_max(window_size=period, min_samples=period)
+    lowest = series.rolling_min(window_size=period, min_samples=period)
+    # diff[0] is null → abs_diff[0] is null → rolling_sum requires period
+    # non-null values → path_sum leading nulls = period.
+    abs_diff = series.diff(1).abs()
+    path_sum = abs_diff.rolling_sum(window_size=period, min_samples=period)
+    # Avoid division by zero when all prices are identical in the window.
+    safe_path = path_sum.replace(0.0, float("nan"))
+    return ((highest - lowest) / safe_path).alias(f"vhf_{period}")
+
+
+# ---------------------------------------------------------------------------
+# Polarized Fractal Efficiency (PFE)
+# ---------------------------------------------------------------------------
+
+
+def pfe(series: pl.Series, period: int = 14, smooth: int = 5) -> pl.Series:
+    """Polarized Fractal Efficiency — directional path-efficiency oscillator.
+
+    PFE measures how efficiently price has moved from its position *period*
+    bars ago to the current bar.  A straight-line Euclidean path (numerator)
+    is compared to the actual price path (denominator); the ratio is then
+    multiplied by the direction of the move (+1 or −1) and by 100.  The raw
+    signal is smoothed with an EMA.
+
+    Values near ±100 indicate highly efficient trending movement; values near
+    0 indicate choppy, random-walk-like behaviour.
+
+    Algorithm:
+        abs_diff[t]    = |close[t] − close[t-1]|
+        actual_path[t] = rolling_sum(abs_diff, period)          (total path length)
+        net_change[t]  = close[t] − close[t-period]
+        straight[t]    = sqrt(net_change² + period²)            (Euclidean distance)
+        direction[t]   = sign(net_change[t])
+        raw[t]         = straight / actual_path × direction × 100
+        PFE[t]         = EMA(raw, smooth)
+
+    Null-prefix: ``period + smooth − 1`` bars.
+
+    Args:
+        series: Close price series.
+        period: Lookback window for the efficiency calculation (default 14).
+        smooth: EMA smoothing period applied to the raw PFE (default 5).
+
+    Returns:
+        Series of PFE values named ``pfe_{period}``.
+
+    Raises:
+        ValueError: If ``period < 2`` or ``smooth < 1``.
+
+    References:
+        - Chande, T. S. *Beyond Technical Analysis* (1997), pp. 68–71.
+        - Investopedia — Polarized Fractal Efficiency:
+          https://www.investopedia.com/terms/p/polarized-fractal-efficiency.asp
+    """
+    _validate_period(period, "PFE", min_period=2)
+    _validate_period(smooth, "PFE smooth")
+
+    # Actual path: sum of absolute bar-to-bar moves over `period` bars.
+    # abs_diff[0] is null (diff gives null at bar 0); rolling_sum therefore
+    # requires `period` non-null values, giving leading nulls = period.
+    abs_diff = series.diff(1).abs()
+    actual_path = abs_diff.rolling_sum(window_size=period, min_samples=period)
+
+    # Euclidean straight-line distance in (time, price) space.
+    net_change = series - series.shift(period)
+    straight = (net_change**2 + float(period) ** 2).sqrt()
+
+    # Avoid 0/0 when there is no price movement in the window.
+    safe_path = actual_path.replace(0.0, float("nan"))
+    pfe_raw = (straight / safe_path).fill_nan(0.0) * net_change.sign() * 100.0
+
+    return ema(pfe_raw, smooth).alias(f"pfe_{period}")
+
+
+# ---------------------------------------------------------------------------
+# Chande Forecast Oscillator (CFO)
+# ---------------------------------------------------------------------------
+
+
+def chande_forecast_oscillator(series: pl.Series, period: int = 14) -> pl.Series:
+    """Chande Forecast Oscillator — percentage deviation of close from TSF.
+
+    The Chande Forecast Oscillator (CFO) measures the percentage by which the
+    current close exceeds (or falls below) the Time Series Forecast (TSF) —
+    the one-bar-ahead projection of the rolling linear regression.  Positive
+    CFO means price is above the regression forecast (momentum); negative CFO
+    means price is below (mean-reversion potential).
+
+    Algorithm:
+        TSF[t] = linreg one-step-ahead projection over the last *period* bars
+        CFO[t] = (close[t] − TSF[t]) / close[t] × 100
+
+    Null-prefix: ``period − 1`` bars (same as TSF).
+
+    Args:
+        series: Close price series.
+        period: Regression lookback window; must be ≥ 2 (default 14).
+
+    Returns:
+        Series of CFO values (%) named ``cfo_{period}``.
+
+    Raises:
+        ValueError: If ``period < 2``.
+
+    References:
+        - Chande, T. S. & Kroll, S. *The New Technical Trader* (1994), p. 300.
+        - Investopedia — Chande Forecast Oscillator:
+          https://www.investopedia.com/terms/c/chandeforecastoscillator.asp
+    """
+    _validate_period(period, "Chande Forecast Oscillator", min_period=2)
+    tsf_vals = tsf(series, period)
+    # Avoid division by zero on bars where price is zero (rare in practice).
+    safe_close = series.replace(0.0, float("nan"))
+    return ((series - tsf_vals) / safe_close * 100.0).alias(f"cfo_{period}")
+
+
+# ---------------------------------------------------------------------------
+# Linear Regression R²
+# ---------------------------------------------------------------------------
+
+
+def linreg_r2(series: pl.Series, period: int = 14) -> pl.Series:
+    """Rolling coefficient of determination (R²) from linear regression.
+
+    R² measures the proportion of variance in the price series explained by
+    the best-fit linear model over each rolling window.  Values near 1.0
+    indicate that price is moving in a nearly perfect straight line (strongly
+    trending); values near 0.0 indicate random, non-directional movement.
+
+    Uses the Pearson correlation identity:
+        R² = [n·Σ(xy) − Σx·Σy]² / [(n·Σx² − (Σx)²) · (n·Σy² − (Σy)²)]
+
+    where x = bar position (0, 1, …, n−1) and y = price.  The denominator
+    for x is constant and is pre-computed analytically.
+
+    Null-prefix: ``period − 1`` bars.
+
+    Args:
+        series: Close price series.
+        period: Rolling window length; must be ≥ 2 (default 14).
+
+    Returns:
+        Series of R² values in [0, 1] named ``linreg_r2_{period}``.
+
+    Raises:
+        ValueError: If ``period < 2``.
+
+    References:
+        - Draper, N. R. & Smith, H. *Applied Regression Analysis* (1998).
+        - Investopedia — R-Squared:
+          https://www.investopedia.com/terms/r/r-squared.asp
+    """
+    _validate_period(period, "Linear Regression R²", min_period=2)
+
+    n = period
+    # x-axis constants (bar positions 0..n-1); identical to linreg_slope.
+    sum_x = n * (n - 1) / 2.0
+    sum_x2 = n * (n - 1) * (2 * n - 1) / 6.0
+    # Denominator for x is constant: n·Σx² − (Σx)².
+    denom_x = float(n) * sum_x2 - sum_x**2
+
+    # Weighted cross-sum: Σ(k · price[t−n+1+k]) for k = 1…n−1.
+    sum_xy: pl.Series = reduce(
+        operator.add,
+        (series.shift(n - 1 - k) * float(k) for k in range(1, n)),
+    )
+    sum_y = series.rolling_sum(window_size=n, min_samples=n)
+    sum_y2 = (series**2).rolling_sum(window_size=n, min_samples=n)
+
+    # Pearson correlation numerator and denominator for y.
+    numer = float(n) * sum_xy - sum_x * sum_y
+    denom_y = float(n) * sum_y2 - sum_y**2
+
+    # R² = numer² / (denom_x × denom_y).
+    # fill_nan: when all prices are equal denom_y = 0 → 0/0 = NaN → set R² = 0.
+    r2 = (numer**2 / (denom_x * denom_y)).fill_nan(0.0)
+    return r2.alias(f"linreg_r2_{period}")
+
+
+# ---------------------------------------------------------------------------
+# Trend Intensity Index (TII)
+# ---------------------------------------------------------------------------
+
+
+def tii(series: pl.Series, period: int = 20) -> pl.Series:
+    """Trend Intensity Index — fraction of closes above or below the SMA.
+
+    The Trend Intensity Index (TII) was introduced by M. H. Pee to quantify
+    how consistently price is trending relative to its simple moving average.
+    It counts the fraction of bars in the most recent *period* window that
+    closed above the SMA, expressed as a percentage.  Values above 50 indicate
+    that the majority of recent bars are above the SMA (uptrend); values below
+    50 indicate a downtrend.  Extremes near 80–100 or 0–20 may signal
+    overbought/oversold conditions.
+
+    Algorithm:
+        sma[t]     = SMA(close, period)
+        above[t]   = 1 if close[t] > sma[t] else 0   (null during warm-up)
+        TII[t]     = rolling_sum(above, period) / period × 100
+
+    Null-prefix: ``2 × (period − 1)`` bars — the SMA contributes period − 1
+    nulls and the second rolling sum adds another period − 1 nulls.
+
+    Args:
+        series: Close price series.
+        period: Lookback window for both the SMA and the count (default 20).
+
+    Returns:
+        Series of TII values in [0, 100] named ``tii_{period}``.
+
+    Raises:
+        ValueError: If ``period < 2``.
+
+    References:
+        - Pee, M. H. "Trend Intensity Index," *Technical Analysis of Stocks
+          & Commodities*, June 2002.
+        - Investopedia — Trend Intensity Index:
+          https://www.investopedia.com/terms/t/trendintensityindex.asp
+    """
+    _validate_period(period, "TII", min_period=2)
+    sma_vals = series.rolling_mean(window_size=period, min_samples=period)
+    # The comparison gives null wherever sma_vals is null (warm-up period).
+    above = (series > sma_vals).cast(pl.Float64)
+    count = above.rolling_sum(window_size=period, min_samples=period)
+    return (count / float(period) * 100.0).alias(f"tii_{period}")
