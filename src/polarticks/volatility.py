@@ -24,6 +24,9 @@ williams_vix_fix      Synthetic fear gauge: rolling-high distance from low
 choppiness_index      Choppiness Index — trending vs. choppy regime quantifier
 squeeze_momentum      TTM Squeeze — BB/KC compression detector with momentum histogram
 volatility_ratio      Volatility Ratio — current True Range vs. its n-period maximum
+bbw                   Bollinger Band Width — normalized band spread (upper−lower)/middle
+bbp                   Bollinger %B — price position relative to Bollinger Bands
+realized_variance     Realized Variance — rolling annualised sum of squared log-returns
 """
 
 from __future__ import annotations
@@ -810,13 +813,13 @@ def squeeze_momentum(
     def _lrv(w: pl.Series) -> float:
         """Fit OLS to the window and return the predicted value at the last bar."""
         n = len(w)
-        vals = w.to_list()
-        mean_y = sum(vals) / n
+        vals: list[float] = w.to_list()
+        mean_y: float = sum(vals) / n
         mean_x = (n - 1) / 2.0
-        ss_xx = sum((i - mean_x) ** 2 for i in range(n))
+        ss_xx: float = sum((i - mean_x) ** 2 for i in range(n))
         if ss_xx == 0.0:
             return mean_y
-        slope = sum((i - mean_x) * (vals[i] - mean_y) for i in range(n)) / ss_xx
+        slope: float = sum((i - mean_x) * (vals[i] - mean_y) for i in range(n)) / ss_xx
         # Predicted value at x = n-1 = mean_y + slope*(n-1)/2.
         return mean_y + slope * (n - 1 - mean_x)
 
@@ -865,3 +868,136 @@ def volatility_ratio(ohlc: pl.DataFrame, period: int = 14) -> pl.Series:
 
     # fill_nan handles the rare case where the rolling maximum is zero (flat market).
     return (tr / max_tr).fill_nan(1.0).alias(f"vol_ratio_{period}")
+
+
+# ---------------------------------------------------------------------------
+# Bollinger Band Width (BBW)
+# ---------------------------------------------------------------------------
+
+
+def bbw(series: pl.Series, period: int = 20, num_std: float = 2.0) -> pl.Series:
+    """Bollinger Band Width — normalised spread of the Bollinger Bands.
+
+    BBW expresses the distance between the upper and lower Bollinger Bands as
+    a fraction of the middle band (the SMA).  A widening BBW indicates
+    increasing volatility; a narrowing BBW ("the squeeze") often precedes an
+    explosive directional move.
+
+    Algorithm:
+        BBW[t] = (upper[t] − lower[t]) / middle[t]
+
+    Null-prefix: ``period − 1`` bars.
+
+    Args:
+        series: Close price series.
+        period: SMA and standard-deviation lookback (default 20).
+        num_std: Width multiplier for the bands (default 2.0).
+
+    Returns:
+        Series of BBW values named ``bbw_{period}``.
+
+    Raises:
+        ValueError: If ``period < 1``.
+
+    References:
+        - Bollinger, J. *Bollinger on Bollinger Bands* (2002), Chapter 5.
+        - Investopedia — Bollinger Band Width:
+          https://www.investopedia.com/terms/b/bollingerbandwidth.asp
+    """
+    _validate_period(period, "Bollinger Band Width")
+    bb = bollinger_bands(series, period=period, num_std=num_std)
+    width = (bb[f"bb_upper_{period}"] - bb[f"bb_lower_{period}"]) / bb[f"bb_middle_{period}"]
+    return width.alias(f"bbw_{period}")
+
+
+# ---------------------------------------------------------------------------
+# Bollinger %B (BBP)
+# ---------------------------------------------------------------------------
+
+
+def bbp(series: pl.Series, period: int = 20, num_std: float = 2.0) -> pl.Series:
+    """Bollinger %B — price position within the Bollinger Bands.
+
+    %B quantifies where the current close is relative to the Bollinger Bands.
+    A value of 1.0 means price is at the upper band; 0.0 means price is at
+    the lower band; 0.5 means price is at the middle band (SMA).  Values
+    above 1 or below 0 indicate price is outside the bands.
+
+    Algorithm:
+        %B[t] = (close[t] − lower[t]) / (upper[t] − lower[t])
+
+    Null-prefix: ``period − 1`` bars.
+
+    Args:
+        series: Close price series.
+        period: SMA and standard-deviation lookback (default 20).
+        num_std: Width multiplier for the bands (default 2.0).
+
+    Returns:
+        Series of %B values named ``bbp_{period}``.
+
+    Raises:
+        ValueError: If ``period < 1``.
+
+    References:
+        - Bollinger, J. *Bollinger on Bollinger Bands* (2002), Chapter 5.
+        - Investopedia — Bollinger Bands %B:
+          https://www.investopedia.com/terms/b/bollingerbands.asp
+    """
+    _validate_period(period, "Bollinger %B")
+    bb = bollinger_bands(series, period=period, num_std=num_std)
+    band_width = bb[f"bb_upper_{period}"] - bb[f"bb_lower_{period}"]
+    # When band_width == 0 (flat market), %B is undefined; fill_nan maps it to 0.5.
+    safe_width = band_width.replace(0.0, float("nan"))
+    pct_b = (series - bb[f"bb_lower_{period}"]) / safe_width
+    return pct_b.fill_nan(0.5).alias(f"bbp_{period}")
+
+
+# ---------------------------------------------------------------------------
+# Realized Variance
+# ---------------------------------------------------------------------------
+
+
+def realized_variance(series: pl.Series, period: int = 20, annualize: bool = True) -> pl.Series:
+    """Realized Variance — rolling annualised sum of squared log-returns.
+
+    Realized Variance (RV) is a model-free volatility estimator computed from
+    the rolling sum of squared log-returns.  Unlike Historical Volatility
+    (which uses the standard deviation), RV accumulates the raw squared moves,
+    making it well-suited for high-frequency applications and variance-swap
+    pricing.
+
+    Algorithm:
+        log_ret[t]  = ln(close[t] / close[t-1]) = log(close[t]) − log(close[t-1])
+        rv_raw[t]   = rolling_sum(log_ret², period)
+        RV[t]       = rv_raw[t] × 252          (if annualize=True; 252 trading days)
+
+    Null-prefix: ``period`` bars (the diff adds one extra null at bar 0).
+
+    Args:
+        series: Close price series (must be strictly positive).
+        period: Rolling sum window (default 20).
+        annualize: Multiply by 252 to express as an annualised figure
+                   (default True).
+
+    Returns:
+        Series of realized variance values named ``realized_variance_{period}``.
+
+    Raises:
+        ValueError: If ``period < 1``.
+
+    References:
+        - Andersen, T. G. & Bollerslev, T. "Answering the Skeptics: Yes,
+          Standard Volatility Models Do Provide Accurate Forecasts,"
+          *International Economic Review* 39 (1998), pp. 885–905.
+        - Investopedia — Realized Volatility:
+          https://www.investopedia.com/terms/r/realized-volatility.asp
+    """
+    _validate_period(period, "Realized Variance")
+    # log[0] is the first bar; diff(1) gives null at bar 0 → lr[0] is null.
+    lr = series.log(math.e).diff(1)
+    squared = lr**2
+    rv = squared.rolling_sum(window_size=period, min_samples=period)
+    if annualize:
+        rv = rv * 252.0
+    return rv.alias(f"realized_variance_{period}")

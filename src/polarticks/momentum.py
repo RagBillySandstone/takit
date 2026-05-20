@@ -30,6 +30,10 @@ smi                 Stochastic Momentum Index — double-EMA stochastic variant
 rvi                 Relative Vigor Index — open/close vs high/low momentum
 bop                 Balance of Power — close position within open-close range
 qqe                 Quantitative Qualitative Estimation — RSI-based trailing trend line
+crsi                Connors RSI — composite of RSI, streak-RSI, and percent-rank
+qstick              Q-Stick — EMA of intraday close-minus-open directionality
+psy_line            Psychological Line — percentage of rising bars in a rolling window
+rocr                Rate of Change Ratio — close / close[n] (ratio form of ROC)
 """
 
 from __future__ import annotations
@@ -45,6 +49,7 @@ from polarticks.moving_averages import (  # noqa: F401 (wma used by coppock)
     wilder_smooth,
     wma,
 )
+from polarticks.utils import percent_rank
 
 # ---------------------------------------------------------------------------
 # RSI
@@ -1247,3 +1252,211 @@ def qqe(
         long_prev, short_prev, qqe_prev = long_curr, short_curr, qqe_curr
 
     return pl.DataFrame({"qqe_line": qqe_line, "qqe_fast": rma_list})
+
+
+# ---------------------------------------------------------------------------
+# Connors RSI
+# ---------------------------------------------------------------------------
+
+
+def crsi(
+    series: pl.Series,
+    rsi_period: int = 3,
+    streak_period: int = 2,
+    rank_period: int = 100,
+) -> pl.Series:
+    """Connors RSI — composite momentum oscillator blending three RSI-family signals.
+
+    Connors RSI averages three independently computed oscillators to produce a
+    composite that is more responsive to short-term momentum than the classic
+    14-period RSI while reducing noise via the diversification of components:
+
+    1. **RSI(rsi_period)** — a short-period RSI applied directly to the close.
+    2. **Streak RSI** — RSI(streak_period) applied to the up/down streak count:
+       the streak is +n after n consecutive up bars and −n after n consecutive
+       down bars.
+    3. **Percent Rank(rank_period)** — the rolling percentile rank of the current
+       close within the last rank_period closes.
+
+    Connors RSI = (RSI + StreakRSI + PercentRank) / 3
+
+    Null-prefix: ``max(rsi_period, streak_period, rank_period − 1)`` bars.
+    With default parameters this is ``rank_period − 1 = 99`` bars.
+
+    Args:
+        series: Close price series.
+        rsi_period: Period for the first RSI component (default 3).
+        streak_period: Period for the streak RSI component (default 2).
+        rank_period: Window for the percent-rank component (default 100).
+
+    Returns:
+        Series of Connors RSI values in [0, 100] named
+        ``crsi_{rsi_period}_{streak_period}_{rank_period}``.
+
+    Raises:
+        ValueError: If any period is below its minimum.
+
+    References:
+        - Connors, L. A. & Alvarez, C. *Short-Term Trading Strategies
+          That Work* (2009).
+        - Investopedia — Connors RSI:
+          https://www.investopedia.com/terms/c/connorsrsi.asp
+    """
+    _validate_period(rsi_period, "Connors RSI rsi_period", min_period=2)
+    _validate_period(streak_period, "Connors RSI streak_period", min_period=2)
+    _validate_period(rank_period, "Connors RSI rank_period")
+
+    # Component 1: short-period RSI on the close.
+    rsi_vals = rsi(series, rsi_period)
+
+    # Component 2: RSI applied to the consecutive-up/down streak.
+    # Build the streak in a Python loop since each bar depends on the prior value.
+    raw: list[float | None] = series.to_list()
+    n = len(raw)
+    streak: list[float] = [0.0] * n
+    for i in range(1, n):
+        curr, prev_val = raw[i], raw[i - 1]
+        if curr is None or prev_val is None:
+            streak[i] = 0.0
+        elif curr > prev_val:
+            # Extend positive streak or start a new one.
+            streak[i] = streak[i - 1] + 1.0 if streak[i - 1] > 0.0 else 1.0
+        elif curr < prev_val:
+            # Extend negative streak or start a new one.
+            streak[i] = streak[i - 1] - 1.0 if streak[i - 1] < 0.0 else -1.0
+        else:
+            streak[i] = 0.0
+    streak_series = pl.Series("streak", streak, dtype=pl.Float64)
+    streak_rsi_vals = rsi(streak_series, streak_period)
+
+    # Component 3: rolling percentile rank of the close (0 = lowest, 100 = highest).
+    pr_vals = percent_rank(series, rank_period)
+
+    # Average the three components; null propagates wherever any component is null.
+    result = (rsi_vals + streak_rsi_vals + pr_vals) / 3.0
+    return result.alias(f"crsi_{rsi_period}_{streak_period}_{rank_period}")
+
+
+# ---------------------------------------------------------------------------
+# Q-Stick
+# ---------------------------------------------------------------------------
+
+
+def qstick(ohlc: pl.DataFrame, period: int = 8) -> pl.Series:
+    """Q-Stick — EMA of intraday close-minus-open directionality.
+
+    Q-Stick, introduced by Tushar Chande, measures the average direction of
+    intraday price movement by smoothing the difference between the close and
+    the open.  Positive values indicate that closes are typically above opens
+    (buying pressure); negative values indicate selling pressure.  Zero crossings
+    signal changes in the prevailing intraday trend.
+
+    Algorithm:
+        body_diff = close − open   (positive for bullish, negative for bearish bars)
+        Q-Stick   = EMA(body_diff, period)
+
+    Null-prefix: ``period − 1`` bars.
+
+    Args:
+        ohlc: DataFrame with columns ``open`` and ``close``.
+        period: EMA smoothing period (default 8).
+
+    Returns:
+        Series of Q-Stick values named ``qstick_{period}``.
+
+    Raises:
+        ValueError: If ``period < 1``.
+
+    References:
+        - Chande, T. S. *Beyond Technical Analysis* (1997), pp. 155–157.
+        - Investopedia — Q-Stick Indicator:
+          https://www.investopedia.com/terms/q/qstick.asp
+    """
+    _validate_period(period, "Q-Stick")
+    body_diff = ohlc["close"] - ohlc["open"]
+    return ema(body_diff, period).alias(f"qstick_{period}")
+
+
+# ---------------------------------------------------------------------------
+# Psychological Line
+# ---------------------------------------------------------------------------
+
+
+def psy_line(series: pl.Series, period: int = 14) -> pl.Series:
+    """Psychological Line — percentage of rising bars in a rolling window.
+
+    The Psychological Line (PSY) counts how many of the last *period* bars
+    closed higher than the previous bar, then expresses that count as a
+    percentage.  Values above 50 indicate that bulls dominated the majority
+    of recent bars; values below 50 indicate bear dominance.  Readings near
+    100 or 0 may signal overbought/oversold conditions.
+
+    Algorithm:
+        is_up[t]    = 1 if close[t] > close[t-1] else 0   (null on bar 0)
+        PSY[t]      = rolling_sum(is_up, period) / period × 100
+
+    Null-prefix: ``period`` bars (the diff adds one extra null at bar 0).
+
+    Args:
+        series: Close price series.
+        period: Rolling window length (default 14).
+
+    Returns:
+        Series of PSY values in [0, 100] named ``psy_{period}``.
+
+    Raises:
+        ValueError: If ``period < 1``.
+
+    References:
+        - Investopedia — Psychological Line:
+          https://www.investopedia.com/terms/p/psychological-line.asp
+    """
+    _validate_period(period, "Psychological Line")
+    # diff[0] is null; the comparison propagates null, keeping bar 0 null.
+    # rolling_sum with min_samples=period therefore waits for period non-null
+    # values, producing exactly period leading nulls.
+    diff = series.diff(1)
+    is_up = (diff > 0).cast(pl.Float64)
+    psy = is_up.rolling_sum(window_size=period, min_samples=period) / period * 100.0
+    return psy.alias(f"psy_{period}")
+
+
+# ---------------------------------------------------------------------------
+# Rate of Change Ratio (ROCR)
+# ---------------------------------------------------------------------------
+
+
+def rocr(series: pl.Series, period: int = 10) -> pl.Series:
+    """Rate of Change Ratio — close / close[n] (ratio form of ROC).
+
+    ROCR expresses the current close as a ratio relative to the close
+    *period* bars ago, producing a dimensionless multiplier.  A value of 1.0
+    means no change; values > 1.0 indicate appreciation; values < 1.0
+    indicate depreciation.  ROCR = 1 + ROC / 100.
+
+    Algorithm:
+        ROCR[t] = close[t] / close[t − period]
+
+    Null-prefix: ``period`` bars.
+
+    Args:
+        series: Close price series.
+        period: Lookback shift (default 10).
+
+    Returns:
+        Series of ROCR values named ``rocr_{period}``.
+        The first ``period`` values are ``null``.
+
+    Raises:
+        ValueError: If ``period < 1``.
+
+    References:
+        - TA-Lib ROCR: https://ta-lib.org/function.html#ROCR
+        - Investopedia — Rate of Change:
+          https://www.investopedia.com/terms/r/rateofchange.asp
+    """
+    _validate_period(period, "ROCR")
+    prev = series.shift(period)
+    # Avoid division by zero when a prior close is zero (rare, but possible).
+    safe_prev = prev.replace(0.0, float("nan"))
+    return (series / safe_prev).alias(f"rocr_{period}")

@@ -33,6 +33,9 @@ is_dark_cloud_cover             Bearish two-bar reversal: bearish bar opens abov
 is_piercing_line                Bullish two-bar reversal: bullish bar opens below prior low, closes into prior body
 is_rising_three_methods         Five-bar bullish continuation pattern
 is_falling_three_methods        Five-bar bearish continuation pattern
+is_dragonfly_doji               Doji with long lower shadow and open/close near the session high
+is_gravestone_doji              Doji with long upper shadow and open/close near the session low
+is_spinning_top                 Small non-doji body with substantial upper and lower wicks
 """
 
 from __future__ import annotations
@@ -1115,9 +1118,7 @@ def is_rising_three_methods(
     return (
         (bar1_bull & middle_ok & bar5_bull)
         .fill_null(False)
-        .alias(  # type: ignore[possibly-undefined]
-            "rising_three_methods"
-        )
+        .alias("rising_three_methods")
     )
 
 
@@ -1168,7 +1169,180 @@ def is_falling_three_methods(
     return (
         (bar1_bear & middle_ok & bar5_bear)
         .fill_null(False)
-        .alias(  # type: ignore[possibly-undefined]
-            "falling_three_methods"
-        )
+        .alias("falling_three_methods")
     )
+
+
+# ---------------------------------------------------------------------------
+# Dragonfly Doji
+# ---------------------------------------------------------------------------
+
+
+def is_dragonfly_doji(
+    ohlc: pl.DataFrame,
+    body_ratio: float = 0.1,
+    shadow_ratio: float = 0.6,
+    upper_limit: float = 0.1,
+) -> pl.Series:
+    """Detect dragonfly doji candles — doji with a long lower shadow.
+
+    A dragonfly doji forms when price opens and closes near the session high
+    while trading down to a significantly lower intraday low before recovering.
+    The long lower shadow suggests that sellers pushed price down during the
+    session but buyers ultimately regained control.  When it appears at the
+    bottom of a downtrend it is a potential bullish reversal signal.
+
+    Structure:
+        - Small body: body ≤ ``body_ratio`` × total range.
+        - Long lower shadow: lower_shadow ≥ ``shadow_ratio`` × total range.
+        - Tiny upper shadow: upper_shadow ≤ ``upper_limit`` × total range.
+
+    Args:
+        ohlc: DataFrame with columns ``open``, ``high``, ``low``, ``close``.
+        body_ratio: Maximum body-to-range ratio (default 0.1).
+        shadow_ratio: Minimum lower-shadow-to-range ratio (default 0.6).
+        upper_limit: Maximum upper-shadow-to-range ratio (default 0.1).
+
+    Returns:
+        Boolean Series, ``True`` on dragonfly doji bars.
+
+    References:
+        - Nison, S. *Japanese Candlestick Charting Techniques* (2001), p. 47.
+        - Investopedia — Dragonfly Doji:
+          https://www.investopedia.com/terms/d/dragonfly-doji-candlestick.asp
+    """
+    candle_range = _range(ohlc)
+    body = _body(ohlc)
+    safe_range = candle_range.replace(0.0, float("nan"))
+
+    # Upper shadow: distance from the top of the body to the high.
+    upper_shadow = (
+        ohlc["high"] - pl.select(pl.max_horizontal(ohlc["open"], ohlc["close"])).to_series()
+    )
+    # Lower shadow: distance from the bottom of the body to the low.
+    lower_shadow = (
+        pl.select(pl.min_horizontal(ohlc["open"], ohlc["close"])).to_series() - ohlc["low"]
+    )
+
+    small_body = (body / safe_range).fill_nan(0.0) <= body_ratio
+    long_lower = (lower_shadow / safe_range).fill_nan(0.0) >= shadow_ratio
+    tiny_upper = (upper_shadow / safe_range).fill_nan(0.0) <= upper_limit
+
+    return (small_body & long_lower & tiny_upper).fill_null(False).alias("dragonfly_doji")
+
+
+# ---------------------------------------------------------------------------
+# Gravestone Doji
+# ---------------------------------------------------------------------------
+
+
+def is_gravestone_doji(
+    ohlc: pl.DataFrame,
+    body_ratio: float = 0.1,
+    shadow_ratio: float = 0.6,
+    lower_limit: float = 0.1,
+) -> pl.Series:
+    """Detect gravestone doji candles — doji with a long upper shadow.
+
+    A gravestone doji forms when price opens and closes near the session low
+    while trading up to a significantly higher intraday high before reversing.
+    The long upper shadow suggests that buyers pushed price up during the
+    session but sellers ultimately took control.  When it appears at the top
+    of an uptrend it is a potential bearish reversal signal.
+
+    Structure:
+        - Small body: body ≤ ``body_ratio`` × total range.
+        - Long upper shadow: upper_shadow ≥ ``shadow_ratio`` × total range.
+        - Tiny lower shadow: lower_shadow ≤ ``lower_limit`` × total range.
+
+    Args:
+        ohlc: DataFrame with columns ``open``, ``high``, ``low``, ``close``.
+        body_ratio: Maximum body-to-range ratio (default 0.1).
+        shadow_ratio: Minimum upper-shadow-to-range ratio (default 0.6).
+        lower_limit: Maximum lower-shadow-to-range ratio (default 0.1).
+
+    Returns:
+        Boolean Series, ``True`` on gravestone doji bars.
+
+    References:
+        - Nison, S. *Japanese Candlestick Charting Techniques* (2001), p. 47.
+        - Investopedia — Gravestone Doji:
+          https://www.investopedia.com/terms/g/gravestone-doji.asp
+    """
+    candle_range = _range(ohlc)
+    body = _body(ohlc)
+    safe_range = candle_range.replace(0.0, float("nan"))
+
+    upper_shadow = (
+        ohlc["high"] - pl.select(pl.max_horizontal(ohlc["open"], ohlc["close"])).to_series()
+    )
+    lower_shadow = (
+        pl.select(pl.min_horizontal(ohlc["open"], ohlc["close"])).to_series() - ohlc["low"]
+    )
+
+    small_body = (body / safe_range).fill_nan(0.0) <= body_ratio
+    long_upper = (upper_shadow / safe_range).fill_nan(0.0) >= shadow_ratio
+    tiny_lower = (lower_shadow / safe_range).fill_nan(0.0) <= lower_limit
+
+    return (small_body & long_upper & tiny_lower).fill_null(False).alias("gravestone_doji")
+
+
+# ---------------------------------------------------------------------------
+# Spinning Top
+# ---------------------------------------------------------------------------
+
+
+def is_spinning_top(
+    ohlc: pl.DataFrame,
+    body_ratio: float = 0.3,
+    min_wick_ratio: float = 0.2,
+    min_body_ratio: float = 0.05,
+) -> pl.Series:
+    """Detect spinning top candles — small body with significant wicks on both sides.
+
+    A spinning top is characterised by a small but visible body (larger than
+    a doji) flanked by upper and lower shadows that are each at least as long
+    as ``min_wick_ratio`` × total range.  It signals indecision: neither
+    bulls nor bears were able to establish control.  Context (trend direction,
+    volume) determines whether it foreshadows continuation or reversal.
+
+    Structure:
+        - Non-doji body: body ≥ ``min_body_ratio`` × total range.
+        - Small body: body ≤ ``body_ratio`` × total range.
+        - Meaningful upper wick: upper_shadow ≥ ``min_wick_ratio`` × total range.
+        - Meaningful lower wick: lower_shadow ≥ ``min_wick_ratio`` × total range.
+
+    Args:
+        ohlc: DataFrame with columns ``open``, ``high``, ``low``, ``close``.
+        body_ratio: Maximum body-to-range ratio (default 0.3).
+        min_wick_ratio: Minimum wick-to-range ratio for each shadow (default 0.2).
+        min_body_ratio: Minimum body-to-range ratio to exclude doji bars (default 0.05).
+
+    Returns:
+        Boolean Series, ``True`` on spinning top bars.
+
+    References:
+        - Nison, S. *Japanese Candlestick Charting Techniques* (2001), p. 32.
+        - Investopedia — Spinning Top Candlestick:
+          https://www.investopedia.com/terms/s/spinning-top.asp
+    """
+    candle_range = _range(ohlc)
+    body = _body(ohlc)
+    safe_range = candle_range.replace(0.0, float("nan"))
+
+    upper_shadow = (
+        ohlc["high"] - pl.select(pl.max_horizontal(ohlc["open"], ohlc["close"])).to_series()
+    )
+    lower_shadow = (
+        pl.select(pl.min_horizontal(ohlc["open"], ohlc["close"])).to_series() - ohlc["low"]
+    )
+
+    body_frac = (body / safe_range).fill_nan(0.0)
+    upper_frac = (upper_shadow / safe_range).fill_nan(0.0)
+    lower_frac = (lower_shadow / safe_range).fill_nan(0.0)
+
+    small_body = (body_frac <= body_ratio) & (body_frac >= min_body_ratio)
+    upper_wick = upper_frac >= min_wick_ratio
+    lower_wick = lower_frac >= min_wick_ratio
+
+    return (small_body & upper_wick & lower_wick).fill_null(False).alias("spinning_top")
