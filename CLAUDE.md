@@ -33,13 +33,13 @@ uv run mypy src/
 
 | Module | Contents |
 |---|---|
-| `moving_averages.py` | SMA, EMA, WMA, Wilder, DEMA, TEMA, HMA, VWMA, McGinley Dynamic, KAMA, TRIX, ZLEMA, T3, ALMA, FRAMA, Laguerre, TRIMA, VIDYA |
-| `momentum.py` | RSI, MACD, Stochastic, Williams %R, CCI, ROC, ROCR, MFI, CMF, TSI, Ultimate Oscillator, PPO, CMO, DPO, KST, Coppock, Fisher Transform, SMI, RVI, BOP, QQE, Awesome Oscillator, Accelerator Oscillator, Connors RSI, Q-Stick, Psychological Line |
-| `volatility.py` | True Range, ATR, Bollinger Bands, BBW, BBP, Keltner, Chaikin Volatility, Historical Volatility, Realized Variance, Ulcer Index, NATR, Chandelier Exit, Mass Index, Parkinson, Garman-Klass, Yang-Zhang, Williams VIX Fix, Choppiness Index, Squeeze Momentum, Volatility Ratio |
-| `trend.py` | Donchian Channels, ADX, Supertrend, Parabolic SAR, Aroon, Vortex, Ichimoku, LinReg Slope, LinReg R², STC, Elder Ray, Alligator, Fractal, LinReg Channel, TSF, Chande Kroll Stop, VHF, PFE, Chande Forecast Oscillator, TII |
-| `volume.py` | OBV, OBV Oscillator, VWAP, VWAP Bands, KVO, EOM, PVT, Force Index, NVI, PVI, AD Line, Chaikin Oscillator, Volume Oscillator, RVOL, Volume ROC, TWAP |
+| `moving_averages.py` | SMA, EMA, WMA, Wilder, DEMA, TEMA, HMA, VWMA, McGinley Dynamic, KAMA, TRIX, ZLEMA, T3, ALMA, FRAMA, Laguerre, TRIMA, VIDYA, EHMA, PWMA |
+| `momentum.py` | RSI, MACD, Stochastic, Williams %R, CCI, ROC, ROCR, MFI, CMF, TSI, Ultimate Oscillator, PPO, CMO, DPO, KST, Coppock, Fisher Transform, SMI, RVI, BOP, QQE, Awesome Oscillator, Accelerator Oscillator, Connors RSI, Q-Stick, Psychological Line, Disparity Index, APO, ASI, PMO, Chande Trend Score |
+| `volatility.py` | True Range, ATR, Bollinger Bands, BBW, BBP, Keltner, Chaikin Volatility, Historical Volatility, Realized Variance, Ulcer Index, NATR, Chandelier Exit, Mass Index, Parkinson, Garman-Klass, Yang-Zhang, Williams VIX Fix, Choppiness Index, Squeeze Momentum, Volatility Ratio, CV, Efficiency Ratio, Standard Error |
+| `trend.py` | Donchian Channels, ADX, Supertrend, Parabolic SAR, Aroon, Vortex, Ichimoku, LinReg Slope, LinReg R², STC, Elder Ray, Alligator, Fractal, LinReg Channel, TSF, Chande Kroll Stop, VHF, PFE, Chande Forecast Oscillator, TII, MA Envelope, LinReg Intercept, Standard Error Bands, COG, RWI |
+| `volume.py` | OBV, OBV Oscillator, VWAP, VWAP Bands, KVO, EOM, PVT, Force Index, NVI, PVI, AD Line, Chaikin Oscillator, Volume Oscillator, RVOL, Volume ROC, TWAP, VZO, MFI_BW, Volume Delta |
 | `levels.py` | Pivot Points (Floor, Camarilla, Fibonacci, Woodie, Demark), Fibonacci Retracement |
-| `patterns.py` | 25 candlestick pattern detectors (single-, two-, three-, and five-bar) incl. Dragonfly Doji, Gravestone Doji, Spinning Top |
+| `patterns.py` | 27 candlestick pattern detectors (single-, two-, three-, and five-bar) incl. Dragonfly Doji, Gravestone Doji, Spinning Top, Marubozu Bullish/Bearish |
 | `utils.py` | crossover, crossunder, log_returns, simple_returns, rolling_highest, rolling_lowest, rolling_std, percent_rank, rolling_zscore, rolling_beta, hurst_exponent |
 
 All 75+ public functions are re-exported from `src/polarticks/__init__.py` via `__all__`.
