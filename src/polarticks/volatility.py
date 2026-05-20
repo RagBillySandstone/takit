@@ -27,6 +27,9 @@ volatility_ratio      Volatility Ratio — current True Range vs. its n-period m
 bbw                   Bollinger Band Width — normalized band spread (upper−lower)/middle
 bbp                   Bollinger %B — price position relative to Bollinger Bands
 realized_variance     Realized Variance — rolling annualised sum of squared log-returns
+coefficient_of_variation  Rolling coefficient of variation (std / mean × 100)
+efficiency_ratio      Kaufman Efficiency Ratio — directional efficiency of price movement
+standard_error        Rolling OLS residual standard error of price vs. trend line
 """
 
 from __future__ import annotations
@@ -1001,3 +1004,157 @@ def realized_variance(series: pl.Series, period: int = 20, annualize: bool = Tru
     if annualize:
         rv = rv * 252.0
     return rv.alias(f"realized_variance_{period}")
+
+
+# ---------------------------------------------------------------------------
+# Coefficient of Variation (CV)
+# ---------------------------------------------------------------------------
+
+
+def coefficient_of_variation(series: pl.Series, period: int = 20) -> pl.Series:
+    """Rolling Coefficient of Variation — standard deviation as a % of the mean.
+
+    The Coefficient of Variation (CV) normalises rolling volatility by the
+    rolling mean, making volatility comparable across instruments with very
+    different price levels.  A high CV indicates high relative variability;
+    a low CV indicates stable, mean-reverting behaviour.
+
+    Algorithm:
+        CV[t] = rolling_std(close, period) / rolling_mean(close, period) × 100
+
+    Null-prefix: ``period − 1`` bars.
+
+    Args:
+        series: Close price series (must not have a zero mean in any window).
+        period: Rolling window length (default 20).
+
+    Returns:
+        Series of CV values (%) named ``cv_{period}``.
+
+    Raises:
+        ValueError: If ``period < 2`` (need at least 2 points for std).
+
+    References:
+        - Investopedia — Coefficient of Variation:
+          https://www.investopedia.com/terms/c/coefficientofvariation.asp
+        - Everitt, B. S. & Skrondal, A. *The Cambridge Dictionary of Statistics*,
+          4th ed. (2010).
+    """
+    _validate_period(period, "Coefficient of Variation", min_period=2)
+    # ddof=1 (sample standard deviation) for consistency with rolling_std.
+    rolling_mean = series.rolling_mean(window_size=period, min_samples=period)
+    rolling_sd = series.rolling_std(window_size=period, min_samples=period, ddof=1)
+    safe_mean = rolling_mean.replace(0.0, float("nan"))
+    return (rolling_sd / safe_mean * 100.0).alias(f"cv_{period}")
+
+
+# ---------------------------------------------------------------------------
+# Efficiency Ratio (ER)
+# ---------------------------------------------------------------------------
+
+
+def efficiency_ratio(series: pl.Series, period: int = 14) -> pl.Series:
+    """Kaufman Efficiency Ratio — directional efficiency of price movement.
+
+    The Efficiency Ratio (Perry Kaufman, 1995) measures how efficiently price
+    travels from point A to point B over *period* bars.  It equals the net
+    displacement divided by the total path length (sum of absolute bar-to-bar
+    changes).  A value of 1.0 means price moved in a straight line (maximum
+    efficiency, strong trend); 0.0 means price zigzagged and ended where it
+    started (random walk, choppy market).
+
+    The ER is the basis of KAMA but is also a useful standalone indicator for
+    regime classification.
+
+    Algorithm:
+        net_change[t] = |close[t] − close[t − period]|
+        path[t]       = sum(|close[t−i] − close[t−i−1]| for i in 0 … period−1)
+        ER[t]         = net_change[t] / path[t]      (range [0, 1])
+
+    Null-prefix: ``period`` bars.
+
+    Args:
+        series: Close price series.
+        period: Lookback window (default 14).
+
+    Returns:
+        Series of ER values in [0, 1] named ``er_{period}``.
+
+    Raises:
+        ValueError: If ``period < 1``.
+
+    References:
+        - Kaufman, P. J. *Smarter Trading* (1995), Chapter 3.
+        - Investopedia — Efficiency Ratio:
+          https://www.investopedia.com/terms/e/efficiencyratio.asp
+    """
+    _validate_period(period, "Efficiency Ratio")
+    # Net displacement over period bars; shift produces `period` leading nulls.
+    net_change = (series - series.shift(period)).abs()
+    # Bar-to-bar absolute changes; diff produces 1 leading null.
+    abs_diff = series.diff(1).abs()
+    # Rolling sum of path; with min_samples=period adds another period-1 nulls
+    # on top of the 1 from diff → total `period` nulls, same as net_change.
+    path = abs_diff.rolling_sum(window_size=period, min_samples=period)
+    safe_path = path.replace(0.0, float("nan"))
+    return (net_change / safe_path).alias(f"er_{period}")
+
+
+# ---------------------------------------------------------------------------
+# Standard Error (Rolling Regression SE)
+# ---------------------------------------------------------------------------
+
+
+def standard_error(series: pl.Series, period: int = 14) -> pl.Series:
+    """Rolling OLS residual standard error of price vs. its trend line.
+
+    For each rolling window of length *period*, fits an OLS regression line
+    ``y = slope·x + intercept`` and returns the residual standard error:
+    ``SE = sqrt(SSR / (n − 2))`` where SSR is the sum of squared residuals
+    and the denominator ``n − 2`` accounts for two estimated parameters
+    (slope and intercept).
+
+    Unlike Historical Volatility (which measures dispersion around the
+    *mean*), SE measures how tightly price hugs its *trend line*.  A low SE
+    indicates price is trending smoothly; a high SE indicates noise.
+
+    Null-prefix: ``period − 1`` bars.
+
+    Args:
+        series: Close price series.
+        period: Regression window length (default 14).  Must be ≥ 3.
+
+    Returns:
+        Series of SE values named ``se_{period}``.
+
+    Raises:
+        ValueError: If ``period < 3``.
+
+    References:
+        - Investopedia — Standard Error:
+          https://www.investopedia.com/terms/s/standard-error.asp
+        - TA-Lib LINEARREG_STDDEV analogue (residual-based).
+    """
+    _validate_period(period, "Standard Error", min_period=3)
+
+    def _se(w: pl.Series) -> float:
+        """Residual SE for a single window."""
+        n = len(w)
+        vals: list[float] = w.to_list()
+        mean_y: float = sum(vals) / n
+        mean_x = (n - 1) / 2.0
+        ss_xx: float = sum((i - mean_x) ** 2 for i in range(n))
+        if ss_xx == 0.0:
+            # Flat price: no residuals → SE = 0.
+            return 0.0
+        ss_xy: float = sum((i - mean_x) * (vals[i] - mean_y) for i in range(n))
+        slope: float = ss_xy / ss_xx
+        intercept: float = mean_y - slope * mean_x
+        ssr: float = sum((vals[i] - (intercept + slope * i)) ** 2 for i in range(n))
+        return float((ssr / (n - 2)) ** 0.5)
+
+    return series.rolling_map(
+        function=_se,
+        window_size=period,
+        min_samples=period,
+    ).alias(f"se_{period}")

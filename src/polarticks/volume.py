@@ -19,6 +19,9 @@ twap              Time-Weighted Average Price (cumulative or rolling equal-weigh
 rvol              Relative Volume — current volume relative to its rolling average
 obv_osc           OBV Oscillator — EMA spread of On-Balance Volume
 volume_roc        Volume Rate of Change — percentage change in trading volume
+vzo               Volume Zone Oscillator — signed EMA volume as % of total EMA volume
+mfi_bw            Market Facilitation Index (Bill Williams) — range per unit of volume
+volume_delta      Volume Delta — bar-level buy-minus-sell volume approximation
 """
 
 from __future__ import annotations
@@ -879,3 +882,141 @@ def volume_roc(ohlc_vol: pl.DataFrame, period: int = 14) -> pl.Series:
     prev_vol = vol.shift(period)
     safe_prev = prev_vol.replace(0.0, float("nan"))
     return ((vol - prev_vol) / safe_prev * 100.0).alias(f"vroc_{period}")
+
+
+# ---------------------------------------------------------------------------
+# Volume Zone Oscillator (VZO)
+# ---------------------------------------------------------------------------
+
+
+def vzo(ohlc_vol: pl.DataFrame, period: int = 14) -> pl.Series:
+    """Volume Zone Oscillator — signed EMA volume as a percentage of total EMA volume.
+
+    The VZO (Walid Khalil & David Steckler, 2009) classifies each bar as
+    positive-volume (price rose) or negative-volume (price fell or was
+    unchanged), then expresses the EMA of signed volume as a percentage of
+    the EMA of total volume.  Readings above +40 are overbought; below −40
+    are oversold.  Crossings of the zero line serve as trend-change signals.
+
+    Algorithm:
+        R[t]   = +volume[t] if close[t] > close[t−1] else −volume[t]
+        VP[t]  = EMA(R, period)      (signed-volume EMA)
+        TV[t]  = EMA(volume, period) (total-volume EMA)
+        VZO[t] = VP[t] / TV[t] × 100
+
+    Null-prefix: ``period − 1`` bars (governed by the EMA).
+
+    Args:
+        ohlc_vol: DataFrame with columns ``close`` and ``volume``.
+        period: EMA lookback (default 14).
+
+    Returns:
+        Series of VZO values (%) named ``vzo_{period}``.
+
+    Raises:
+        ValueError: If ``period < 1``.
+
+    References:
+        - Khalil, W. & Steckler, D. "Volume Zone Oscillator," *Technical
+          Analysis of Stocks & Commodities* (2009).
+        - Investopedia — Volume Zone Oscillator:
+          https://www.investopedia.com/terms/v/volume-zone-oscillator.asp
+    """
+    _validate_period(period, "VZO")
+    close = ohlc_vol["close"]
+    vol = ohlc_vol["volume"].cast(pl.Float64)
+
+    # Signed volume: positive when close > prior close, negative otherwise.
+    # bar 0 has no prior close; diff[0] is null → null comparison → R[0] = 0.
+    direction = (close.diff(1) > 0).cast(pl.Float64) * 2.0 - 1.0
+    r = (direction.fill_null(0.0) * vol).alias("r")
+
+    vp = ema(r, period)
+    tv = ema(vol, period)
+    safe_tv = tv.replace(0.0, float("nan"))
+    return (vp / safe_tv * 100.0).alias(f"vzo_{period}")
+
+
+# ---------------------------------------------------------------------------
+# Market Facilitation Index — Bill Williams (MFI_BW)
+# ---------------------------------------------------------------------------
+
+
+def mfi_bw(ohlc_vol: pl.DataFrame) -> pl.Series:
+    """Market Facilitation Index (Bill Williams) — range per unit of volume.
+
+    Not to be confused with the Money Flow Index (MFI), the Market
+    Facilitation Index (Bill Williams, *Trading Chaos*, 1995) measures how
+    efficiently the market facilitates price movement per unit of trading
+    volume: a high reading means price moved a lot relative to volume (easy
+    movement); a low reading means a lot of volume was required to move price
+    (difficult movement).  Traders use changes in MFI alongside volume changes
+    to identify squat bars, green bars, fade bars, and fake bars.
+
+    Algorithm:
+        MFI_BW[t] = (high[t] − low[t]) / volume[t]
+
+    Null-prefix: none — this is a pure bar-by-bar computation.
+
+    Args:
+        ohlc_vol: DataFrame with columns ``high``, ``low``, and ``volume``.
+
+    Returns:
+        Series of MFI_BW values named ``mfi_bw``.  Zero-volume bars produce
+        ``null`` (undefined).
+
+    References:
+        - Williams, B. *Trading Chaos*, 2nd ed. (1995), Chapter 4.
+        - Investopedia — Market Facilitation Index:
+          https://www.investopedia.com/terms/m/marketfacilitationindex.asp
+    """
+    h = ohlc_vol["high"]
+    lo = ohlc_vol["low"]
+    vol = ohlc_vol["volume"].cast(pl.Float64)
+    safe_vol = vol.replace(0.0, float("nan"))
+    return ((h - lo) / safe_vol).alias("mfi_bw")
+
+
+# ---------------------------------------------------------------------------
+# Volume Delta
+# ---------------------------------------------------------------------------
+
+
+def volume_delta(ohlc_vol: pl.DataFrame) -> pl.Series:
+    """Volume Delta — bar-level buy-minus-sell volume approximation.
+
+    Volume Delta approximates the net buying minus selling pressure within a
+    single bar by partitioning total volume in proportion to where the close
+    falls within the high-low range (the Close Location Value).  A positive
+    delta means more estimated buying; a negative delta means more estimated
+    selling.  This is useful for intrabar order-flow analysis when tick data
+    is not available.
+
+    Algorithm:
+        CLV[t]      = (2 × close − high − low) / (high − low)   (∈ [−1, 1])
+        delta[t]    = volume[t] × CLV[t]
+
+    Null-prefix: none — pure bar-by-bar computation.  Zero-range bars
+    (high = low) produce ``0`` (no directional information).
+
+    Args:
+        ohlc_vol: DataFrame with columns ``high``, ``low``, ``close``,
+                  and ``volume``.
+
+    Returns:
+        Series of volume delta values named ``volume_delta``.
+
+    References:
+        - Blau, W. *Momentum, Direction, and Divergence* (1995).
+        - Investopedia — Volume:
+          https://www.investopedia.com/terms/v/volume.asp
+    """
+    h = ohlc_vol["high"]
+    lo = ohlc_vol["low"]
+    c = ohlc_vol["close"]
+    vol = ohlc_vol["volume"].cast(pl.Float64)
+    candle_range = h - lo
+    # CLV = 0 on zero-range bars (doji/flat); fill_nan preserves the contract.
+    safe_range = candle_range.replace(0.0, float("nan"))
+    clv = ((2.0 * c - h - lo) / safe_range).fill_nan(0.0)
+    return (vol * clv).alias("volume_delta")

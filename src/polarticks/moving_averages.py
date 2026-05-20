@@ -26,6 +26,8 @@ frama             Fractal Adaptive Moving Average (fractal-dimension adaptive sm
 laguerre          Laguerre Filter             (four-element low-lag smoother, Ehlers)
 trima             Triangular Moving Average   (double-smoothed SMA; triangular weights)
 vidya             Variable Index Dynamic Average (CMO-adaptive EMA, Chande 1994)
+ehma              Exponential Hull Moving Average (EMA variant of HMA; low-lag, smooth)
+pwma              Pascal's Weighted Moving Average (binomial-coefficient weighting)
 """
 
 from __future__ import annotations
@@ -1061,3 +1063,110 @@ def vidya(series: pl.Series, cmo_period: int = 9, alpha: float = 0.2) -> pl.Seri
         output[i] = prev
 
     return pl.Series(f"vidya_{cmo_period}", output, dtype=pl.Float64)
+
+
+# ---------------------------------------------------------------------------
+# Exponential Hull Moving Average (EHMA)
+# ---------------------------------------------------------------------------
+
+
+def ehma(series: pl.Series, period: int) -> pl.Series:
+    """Exponential Hull Moving Average — EMA-based variant of the Hull MA.
+
+    The EHMA substitutes Exponential Moving Averages for the Weighted Moving
+    Averages used in the standard HMA.  Like HMA it applies the
+    "2·fast − slow" de-lagging trick then smooths the result with a
+    sqrt(period)-span EMA, yielding a low-lag, smooth curve.
+
+    Algorithm:
+        fast_period = period // 2
+        sqrt_period = max(2, round(sqrt(period)))
+        fast  = EMA(series, fast_period)
+        slow  = EMA(series, period)
+        raw   = 2 × fast − slow
+        EHMA  = EMA(raw, sqrt_period)
+
+    Null-prefix: ``period + sqrt_period − 2`` bars.
+    - ``slow`` contributes ``period − 1`` nulls.
+    - ``EMA(raw, sqrt_period)`` adds another ``sqrt_period − 1`` nulls.
+
+    Args:
+        series: Input price series (e.g., close).
+        period: Lookback window.  Must be ≥ 2.
+
+    Returns:
+        Series of EHMA values named ``ehma_{period}``.
+
+    Raises:
+        ValueError: If ``period < 2``.
+
+    References:
+        - Based on Hull, A. "Hull Moving Average."
+          https://alanhull.com/hull-moving-average
+        - Investopedia — Hull Moving Average:
+          https://www.investopedia.com/terms/h/hull-moving-average.asp
+    """
+    _validate_period(period, "EHMA", min_period=2)
+    fast_period = period // 2
+    sqrt_period = max(2, round(math.sqrt(period)))
+
+    # Two EMA passes at different spans; then denoise with a third.
+    fast_ema = ema(series, fast_period)
+    slow_ema = ema(series, period)
+    raw = 2.0 * fast_ema - slow_ema
+    return ema(raw, sqrt_period).alias(f"ehma_{period}")
+
+
+# ---------------------------------------------------------------------------
+# Pascal's Weighted Moving Average (PWMA)
+# ---------------------------------------------------------------------------
+
+
+def pwma(series: pl.Series, period: int) -> pl.Series:
+    """Pascal's Weighted Moving Average — binomial-coefficient weighting.
+
+    PWMA weights each bar in the rolling window by the corresponding entry in
+    row ``period − 1`` of Pascal's triangle (i.e. binomial coefficients
+    C(period−1, i) for i = 0 … period−1, oldest to most recent).  The
+    bell-shaped weight profile gives heavy emphasis to the centre of the
+    window, producing a smooth output similar to a Gaussian filter.
+
+    Algorithm:
+        weights[i]  = C(period − 1, i)  for i = 0, 1, …, period − 1
+        PWMA[t]     = sum(close[t−period+1+i] × weights[i]) / sum(weights)
+
+    Null-prefix: ``period − 1`` bars.
+
+    Args:
+        series: Input price series (e.g., close).
+        period: Lookback window (also the number of binomial weights).
+                Must be ≥ 1.
+
+    Returns:
+        Series of PWMA values named ``pwma_{period}``.
+
+    Raises:
+        ValueError: If ``period < 1``.
+
+    References:
+        - Kaufman, P. J. *Trading Systems and Methods*, 5th ed. (2013),
+          Chapter 2 (weighted averages overview).
+        - Investopedia — Weighted Moving Average:
+          https://www.investopedia.com/terms/w/weighted.asp
+    """
+    _validate_period(period, "PWMA")
+
+    # Pre-compute binomial weights from row (period-1) of Pascal's triangle.
+    weights = [math.comb(period - 1, i) for i in range(period)]
+    total_w = float(sum(weights))
+
+    def _pwma_window(w: pl.Series) -> float:
+        """Apply binomial weights to a single window."""
+        vals: list[float] = w.to_list()
+        return sum(v * wt for v, wt in zip(vals, weights, strict=True)) / total_w
+
+    return series.rolling_map(
+        function=_pwma_window,
+        window_size=period,
+        min_samples=period,
+    ).alias(f"pwma_{period}")

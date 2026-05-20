@@ -36,6 +36,8 @@ is_falling_three_methods        Five-bar bearish continuation pattern
 is_dragonfly_doji               Doji with long lower shadow and open/close near the session high
 is_gravestone_doji              Doji with long upper shadow and open/close near the session low
 is_spinning_top                 Small non-doji body with substantial upper and lower wicks
+is_marubozu_bullish             All-body bullish candle with negligible upper and lower wicks
+is_marubozu_bearish             All-body bearish candle with negligible upper and lower wicks
 """
 
 from __future__ import annotations
@@ -1115,11 +1117,7 @@ def is_rising_three_methods(
     # Bar 5 (current): large bullish closing above Bar 1's close.
     bar5_bull = (c > o) & (_body_range_ratio(o, c, h, lo) >= body_ratio) & (c > c1)
 
-    return (
-        (bar1_bull & middle_ok & bar5_bull)
-        .fill_null(False)
-        .alias("rising_three_methods")
-    )
+    return (bar1_bull & middle_ok & bar5_bull).fill_null(False).alias("rising_three_methods")
 
 
 def is_falling_three_methods(
@@ -1166,11 +1164,7 @@ def is_falling_three_methods(
     # Bar 5 (current): large bearish closing below Bar 1's close.
     bar5_bear = (c < o) & (_body_range_ratio(o, c, h, lo) >= body_ratio) & (c < c1)
 
-    return (
-        (bar1_bear & middle_ok & bar5_bear)
-        .fill_null(False)
-        .alias("falling_three_methods")
-    )
+    return (bar1_bear & middle_ok & bar5_bear).fill_null(False).alias("falling_three_methods")
 
 
 # ---------------------------------------------------------------------------
@@ -1346,3 +1340,112 @@ def is_spinning_top(
     lower_wick = lower_frac >= min_wick_ratio
 
     return (small_body & upper_wick & lower_wick).fill_null(False).alias("spinning_top")
+
+
+# ---------------------------------------------------------------------------
+# Marubozu
+# ---------------------------------------------------------------------------
+
+
+def is_marubozu_bullish(ohlc: pl.DataFrame, wick_limit: float = 0.05) -> pl.Series:
+    """Detect bullish Marubozu candles — an all-body bullish bar with tiny wicks.
+
+    A bullish Marubozu is a strong bullish candle in which the body accounts
+    for nearly the entire range; both wicks are smaller than ``wick_limit``
+    times the total range.  It signals decisive buying pressure with no
+    significant rejection at either end, making it one of the strongest
+    single-bar bullish signals.
+
+    Structure:
+        - Bullish: close > open.
+        - Upper wick ≤ ``wick_limit`` × total range.
+        - Lower wick ≤ ``wick_limit`` × total range.
+        - Zero-range bars (doji) are excluded (``False``).
+
+    Args:
+        ohlc: DataFrame with columns ``open``, ``high``, ``low``, ``close``.
+        wick_limit: Maximum wick-to-range ratio for each shadow (default 0.05 = 5 %).
+
+    Returns:
+        Boolean Series, ``True`` on bullish Marubozu bars.
+
+    References:
+        - Nison, S. *Japanese Candlestick Charting Techniques* (2001), p. 27.
+        - Investopedia — Marubozu:
+          https://www.investopedia.com/terms/m/marubozu.asp
+    """
+    candle_range = _range(ohlc)
+    safe_range = candle_range.replace(0.0, float("nan"))
+
+    upper_shadow = (
+        ohlc["high"] - pl.select(pl.max_horizontal(ohlc["open"], ohlc["close"])).to_series()
+    )
+    lower_shadow = (
+        pl.select(pl.min_horizontal(ohlc["open"], ohlc["close"])).to_series() - ohlc["low"]
+    )
+
+    upper_frac = (upper_shadow / safe_range).fill_nan(1.0)
+    lower_frac = (lower_shadow / safe_range).fill_nan(1.0)
+
+    is_bull = _is_bullish(ohlc)
+    tiny_upper = upper_frac <= wick_limit
+    tiny_lower = lower_frac <= wick_limit
+    nonzero_range = candle_range > 0.0
+
+    return (
+        (is_bull & tiny_upper & tiny_lower & nonzero_range)
+        .fill_null(False)
+        .alias("marubozu_bullish")
+    )
+
+
+def is_marubozu_bearish(ohlc: pl.DataFrame, wick_limit: float = 0.05) -> pl.Series:
+    """Detect bearish Marubozu candles — an all-body bearish bar with tiny wicks.
+
+    A bearish Marubozu is a strong bearish candle in which the body accounts
+    for nearly the entire range; both wicks are smaller than ``wick_limit``
+    times the total range.  It signals decisive selling pressure with no
+    significant rejection at either end, making it one of the strongest
+    single-bar bearish signals.
+
+    Structure:
+        - Bearish: close < open.
+        - Upper wick ≤ ``wick_limit`` × total range.
+        - Lower wick ≤ ``wick_limit`` × total range.
+        - Zero-range bars (doji) are excluded (``False``).
+
+    Args:
+        ohlc: DataFrame with columns ``open``, ``high``, ``low``, ``close``.
+        wick_limit: Maximum wick-to-range ratio for each shadow (default 0.05 = 5 %).
+
+    Returns:
+        Boolean Series, ``True`` on bearish Marubozu bars.
+
+    References:
+        - Nison, S. *Japanese Candlestick Charting Techniques* (2001), p. 27.
+        - Investopedia — Marubozu:
+          https://www.investopedia.com/terms/m/marubozu.asp
+    """
+    candle_range = _range(ohlc)
+    safe_range = candle_range.replace(0.0, float("nan"))
+
+    upper_shadow = (
+        ohlc["high"] - pl.select(pl.max_horizontal(ohlc["open"], ohlc["close"])).to_series()
+    )
+    lower_shadow = (
+        pl.select(pl.min_horizontal(ohlc["open"], ohlc["close"])).to_series() - ohlc["low"]
+    )
+
+    upper_frac = (upper_shadow / safe_range).fill_nan(1.0)
+    lower_frac = (lower_shadow / safe_range).fill_nan(1.0)
+
+    is_bear = _is_bearish(ohlc)
+    tiny_upper = upper_frac <= wick_limit
+    tiny_lower = lower_frac <= wick_limit
+    nonzero_range = candle_range > 0.0
+
+    return (
+        (is_bear & tiny_upper & tiny_lower & nonzero_range)
+        .fill_null(False)
+        .alias("marubozu_bearish")
+    )

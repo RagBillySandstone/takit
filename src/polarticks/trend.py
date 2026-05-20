@@ -23,6 +23,11 @@ pfe                         Polarized Fractal Efficiency — EMA-smoothed path-e
 chande_forecast_oscillator  Chande Forecast Oscillator — % deviation of close from TSF
 linreg_r2                   Rolling linear regression R² (coefficient of determination)
 tii                         Trend Intensity Index — fraction of closes above/below the SMA
+ma_envelope                 Moving Average Envelope — MA ± percentage bands
+linreg_intercept            Rolling OLS y-intercept (constant term at x = 0)
+standard_error_bands        Linear regression line ± 2 × residual standard error
+cog                         Centre of Gravity oscillator — Ehlers' price-weighted lag estimator
+rwi                         Random Walk Index — tests whether price moves exceed a random walk
 """
 
 from __future__ import annotations
@@ -1293,3 +1298,329 @@ def tii(series: pl.Series, period: int = 20) -> pl.Series:
     above = (series > sma_vals).cast(pl.Float64)
     count = above.rolling_sum(window_size=period, min_samples=period)
     return (count / float(period) * 100.0).alias(f"tii_{period}")
+
+
+# ---------------------------------------------------------------------------
+# Moving Average Envelope (MAE)
+# ---------------------------------------------------------------------------
+
+
+def ma_envelope(series: pl.Series, period: int = 20, pct: float = 0.025) -> pl.DataFrame:
+    """Moving Average Envelope — MA ± percentage bands.
+
+    Moving Average Envelopes plot a simple moving average flanked by two
+    bands that are a fixed percentage above and below it.  Price touching or
+    piercing the upper band may signal overbought conditions; the lower band
+    may signal oversold.  The distance between the bands widens during higher-
+    volatility regimes.
+
+    Algorithm:
+        middle[t] = SMA(close, period)
+        upper[t]  = middle[t] × (1 + pct)
+        lower[t]  = middle[t] × (1 − pct)
+
+    Null-prefix: ``period − 1`` bars (governed by the SMA).
+
+    Args:
+        series: Close price series.
+        period: SMA lookback (default 20).
+        pct: Envelope width as a decimal fraction of the SMA (default 0.025 = 2.5 %).
+
+    Returns:
+        DataFrame with columns ``mae_upper_{period}``, ``mae_middle_{period}``,
+        ``mae_lower_{period}``.
+
+    Raises:
+        ValueError: If ``period < 1`` or ``pct <= 0``.
+
+    References:
+        - Investopedia — Envelope Channel:
+          https://www.investopedia.com/terms/e/envelope-channel.asp
+        - Murphy, J. J. *Technical Analysis of the Financial Markets* (1999),
+          Chapter 9.
+    """
+    _validate_period(period, "MA Envelope")
+    if pct <= 0.0:
+        raise ValueError(f"MA Envelope pct must be positive; got {pct}.")
+    middle = series.rolling_mean(window_size=period, min_samples=period)
+    upper = middle * (1.0 + pct)
+    lower = middle * (1.0 - pct)
+    return pl.DataFrame(
+        {
+            f"mae_upper_{period}": upper,
+            f"mae_middle_{period}": middle,
+            f"mae_lower_{period}": lower,
+        }
+    )
+
+
+# ---------------------------------------------------------------------------
+# Linear Regression Intercept
+# ---------------------------------------------------------------------------
+
+
+def linreg_intercept(series: pl.Series, period: int = 14) -> pl.Series:
+    """Rolling linear regression y-intercept (OLS constant at x = 0).
+
+    For each rolling window of length *period*, fits an OLS line
+    ``y = slope·x + intercept`` where x = [0, 1, …, period−1] and returns
+    the intercept (the fitted value at x = 0, the oldest bar in the window).
+    Together with ``linreg_slope`` this fully specifies the regression line;
+    the fitted value at the *last* bar is the Time Series Forecast (``tsf``).
+
+    Algorithm:
+        mean_x    = (period − 1) / 2
+        mean_y    = rolling_mean(close, period)
+        ss_xx     = sum((i − mean_x)² for i in 0..period−1)
+        ss_xy     = sum((i − mean_x) × (y_i − mean_y))
+        slope     = ss_xy / ss_xx
+        intercept = mean_y − slope × mean_x
+
+    Null-prefix: ``period − 1`` bars.
+
+    Args:
+        series: Close price series.
+        period: Regression window length (default 14).
+
+    Returns:
+        Series of intercept values named ``linreg_intercept_{period}``.
+
+    Raises:
+        ValueError: If ``period < 2``.
+
+    References:
+        - Investopedia — Linear Regression:
+          https://www.investopedia.com/terms/l/linearrelationship.asp
+        - TA-Lib LINEARREG_INTERCEPT:
+          https://ta-lib.org/function.html#LINEARREG_INTERCEPT
+    """
+    _validate_period(period, "LinReg Intercept", min_period=2)
+
+    def _intercept(w: pl.Series) -> float:
+        """OLS intercept for a single window of length n."""
+        n = len(w)
+        vals: list[float] = w.to_list()
+        mean_y: float = sum(vals) / n
+        mean_x = (n - 1) / 2.0
+        ss_xx: float = sum((i - mean_x) ** 2 for i in range(n))
+        if ss_xx == 0.0:
+            # Flat series: slope = 0, intercept = mean.
+            return mean_y
+        ss_xy: float = sum((i - mean_x) * (vals[i] - mean_y) for i in range(n))
+        slope: float = ss_xy / ss_xx
+        return mean_y - slope * mean_x
+
+    return series.rolling_map(
+        function=_intercept,
+        window_size=period,
+        min_samples=period,
+    ).alias(f"linreg_intercept_{period}")
+
+
+# ---------------------------------------------------------------------------
+# Standard Error Bands
+# ---------------------------------------------------------------------------
+
+
+def standard_error_bands(series: pl.Series, period: int = 21) -> pl.DataFrame:
+    """Linear regression line ± 2 × residual standard error.
+
+    Standard Error Bands (Jon Andersen, 1996) plot the rolling OLS regression
+    line flanked by bands at ±2 standard errors of the residuals.  Unlike
+    Bollinger Bands (which use the standard deviation of *price*), the bands
+    here reflect how tightly price adheres to its *trend line*, contracting in
+    trending markets and expanding in choppy ones.
+
+    Algorithm (per window of length n ≥ 3):
+        fit predicted values  ŷ_i = intercept + slope × i
+        SSR = sum((y_i − ŷ_i)²)
+        SE  = sqrt(SSR / (n − 2))    (residual standard error, ddof = 2)
+        upper = ŷ_{n−1} + 2 × SE
+        middle= ŷ_{n−1}              (= TSF at the last bar)
+        lower = ŷ_{n−1} − 2 × SE
+
+    Null-prefix: ``period − 1`` bars.
+
+    Args:
+        series: Close price series.
+        period: Regression window length (default 21).  Must be ≥ 3 to allow
+                residual ddof = 2.
+
+    Returns:
+        DataFrame with columns ``seb_upper_{period}``, ``seb_middle_{period}``,
+        ``seb_lower_{period}``.
+
+    Raises:
+        ValueError: If ``period < 3``.
+
+    References:
+        - Andersen, J. "Standard Error Bands," *Technical Analysis of Stocks
+          & Commodities* (1996).
+        - Investopedia — Standard Error:
+          https://www.investopedia.com/terms/s/standard-error.asp
+    """
+    _validate_period(period, "Standard Error Bands", min_period=3)
+
+    def _seb(w: pl.Series) -> tuple[float, float, float]:
+        """OLS fit returning (upper, middle, lower) for a single window."""
+        n = len(w)
+        vals: list[float] = w.to_list()
+        mean_y: float = sum(vals) / n
+        mean_x = (n - 1) / 2.0
+        ss_xx: float = sum((i - mean_x) ** 2 for i in range(n))
+        if ss_xx == 0.0:
+            # Flat series: no slope, no spread.
+            return mean_y, mean_y, mean_y
+        ss_xy: float = sum((i - mean_x) * (vals[i] - mean_y) for i in range(n))
+        slope: float = ss_xy / ss_xx
+        intercept: float = mean_y - slope * mean_x
+        # Predicted values and residual sum of squares.
+        ssr: float = sum((vals[i] - (intercept + slope * i)) ** 2 for i in range(n))
+        se: float = (ssr / (n - 2)) ** 0.5
+        # Return fitted value at the last bar ± 2 SE.
+        fitted_last: float = intercept + slope * (n - 1)
+        return fitted_last + 2.0 * se, fitted_last, fitted_last - 2.0 * se
+
+    # rolling_map returns a single Series; we need three outputs.
+    # Compute each band by injecting a small adapter around _seb.
+    def _upper(w: pl.Series) -> float:
+        return _seb(w)[0]
+
+    def _middle(w: pl.Series) -> float:
+        return _seb(w)[1]
+
+    def _lower(w: pl.Series) -> float:
+        return _seb(w)[2]
+
+    upper = series.rolling_map(function=_upper, window_size=period, min_samples=period)
+    middle = series.rolling_map(function=_middle, window_size=period, min_samples=period)
+    lower = series.rolling_map(function=_lower, window_size=period, min_samples=period)
+
+    return pl.DataFrame(
+        {
+            f"seb_upper_{period}": upper,
+            f"seb_middle_{period}": middle,
+            f"seb_lower_{period}": lower,
+        }
+    )
+
+
+# ---------------------------------------------------------------------------
+# Centre of Gravity (COG)
+# ---------------------------------------------------------------------------
+
+
+def cog(series: pl.Series, period: int = 10) -> pl.Series:
+    """Centre of Gravity oscillator — Ehlers' price-weighted lag estimator.
+
+    The Centre of Gravity (COG) oscillator was introduced by John Ehlers
+    (2002) as a near-zero-lag indicator that identifies turning points in
+    price.  It computes a weighted average of the last *period* prices where
+    the weight of each bar equals its distance from the current bar (1 for
+    the most recent, *period* for the oldest).  The result is negated so that
+    upward turning points produce local minima.
+
+    Algorithm (current bar = index 0, oldest = index period−1):
+        numerator[t]   = sum(close[t−i] × (i + 1) for i in 0 … period−1)
+        denominator[t] = sum(close[t−i] for i in 0 … period−1)
+        COG[t]         = −numerator[t] / denominator[t]
+
+    Null-prefix: ``period − 1`` bars.
+
+    Args:
+        series: Close price series.
+        period: Lookback window (default 10).
+
+    Returns:
+        Series of COG values named ``cog_{period}``.  Values are negative
+        numbers; peaks correspond to price cycle lows, troughs to highs.
+
+    Raises:
+        ValueError: If ``period < 1``.
+
+    References:
+        - Ehlers, J. F. "Center of Gravity Indicator," *Technical Analysis of
+          Stocks & Commodities* (May 2002).
+        - Investopedia — Center of Gravity Indicator:
+          https://www.investopedia.com/terms/c/center-of-gravity-cog-indicator.asp
+    """
+    _validate_period(period, "Centre of Gravity")
+
+    # Decreasing weights: most recent bar gets weight 1, oldest gets weight `period`.
+    weights = list(range(1, period + 1))
+
+    def _cog_window(w: pl.Series) -> float:
+        """Compute COG for a single window (oldest → newest order)."""
+        # Polars rolling_map passes windows oldest-first; reverse for COG weights.
+        vals: list[float] = w.to_list()
+        numer = sum(v * wt for v, wt in zip(reversed(vals), weights, strict=True))
+        denom = sum(vals)
+        if denom == 0.0:
+            return float("nan")
+        return -numer / denom
+
+    return series.rolling_map(
+        function=_cog_window,
+        window_size=period,
+        min_samples=period,
+    ).alias(f"cog_{period}")
+
+
+# ---------------------------------------------------------------------------
+# Random Walk Index (RWI)
+# ---------------------------------------------------------------------------
+
+
+def rwi(ohlc: pl.DataFrame, period: int = 14) -> pl.DataFrame:
+    """Random Walk Index — tests whether price moves exceed a random walk.
+
+    The Random Walk Index (Michael Poulos, 1992) compares the observed price
+    range over *period* bars to what would be expected from a purely random
+    walk of the same length.  RWI_High > 1 signals an uptrend stronger than
+    chance; RWI_Low > 1 signals a downtrend stronger than chance.  Both
+    exceeding 1 simultaneously is rare and suggests a volatile, directional
+    market.
+
+    Algorithm:
+        ATR[t]     = Average True Range(ohlc, period)
+        RWI_High[t] = (H[t] − L[t−period]) / (ATR[t] × sqrt(period))
+        RWI_Low[t]  = (H[t−period] − L[t]) / (ATR[t] × sqrt(period))
+
+    Null-prefix: ``period`` bars (ATR and the *period*-bar shifts both
+    require *period* prior bars).
+
+    Args:
+        ohlc: DataFrame with columns ``high``, ``low``, ``close``.
+        period: Lookback window (default 14).
+
+    Returns:
+        DataFrame with columns ``rwi_high_{period}`` and ``rwi_low_{period}``.
+
+    Raises:
+        ValueError: If ``period < 1``.
+
+    References:
+        - Poulos, M. "Of Trends and Random Walks," *Technical Analysis of
+          Stocks & Commodities* (1992).
+        - Investopedia — Random Walk Index:
+          https://www.investopedia.com/terms/r/random-walk-index.asp
+    """
+    _validate_period(period, "RWI")
+    h = ohlc["high"]
+    lo = ohlc["low"]
+
+    atr_vals = atr(ohlc, period)
+    denom = atr_vals * (period**0.5)
+    safe_denom = denom.replace(0.0, float("nan"))
+
+    # Compare current high to the low `period` bars ago (upward sweep).
+    rwi_high = (h - lo.shift(period)) / safe_denom
+    # Compare the high `period` bars ago to current low (downward sweep).
+    rwi_low = (h.shift(period) - lo) / safe_denom
+
+    return pl.DataFrame(
+        {
+            f"rwi_high_{period}": rwi_high,
+            f"rwi_low_{period}": rwi_low,
+        }
+    )

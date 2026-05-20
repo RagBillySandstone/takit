@@ -34,6 +34,11 @@ crsi                Connors RSI — composite of RSI, streak-RSI, and percent-ra
 qstick              Q-Stick — EMA of intraday close-minus-open directionality
 psy_line            Psychological Line — percentage of rising bars in a rolling window
 rocr                Rate of Change Ratio — close / close[n] (ratio form of ROC)
+disparity_index     Disparity Index — % deviation of price from its moving average
+apo                 Absolute Price Oscillator — difference of two EMAs in price units
+asi                 Accumulative Swing Index — Wilder's cumulative directional indicator
+pmo                 Price Momentum Oscillator — double-smoothed rate-of-change
+chande_trend_score  Chande Trend Score — % of prior bars the current close exceeds
 """
 
 from __future__ import annotations
@@ -1460,3 +1465,272 @@ def rocr(series: pl.Series, period: int = 10) -> pl.Series:
     # Avoid division by zero when a prior close is zero (rare, but possible).
     safe_prev = prev.replace(0.0, float("nan"))
     return (series / safe_prev).alias(f"rocr_{period}")
+
+
+# ---------------------------------------------------------------------------
+# Disparity Index
+# ---------------------------------------------------------------------------
+
+
+def disparity_index(series: pl.Series, period: int = 14) -> pl.Series:
+    """Disparity Index — percentage deviation of price from its moving average.
+
+    The Disparity Index (DI) measures how far the current price has strayed
+    from its simple moving average, expressed as a percentage.  Positive
+    values mean price is above the SMA (potential overbought); negative values
+    mean price is below (potential oversold).  Unlike oscillators such as RSI,
+    DI is price-scale agnostic and normalises deviation by the SMA itself.
+
+    Algorithm:
+        SMA[t]       = SMA(close, period)
+        DI[t]        = (close[t] − SMA[t]) / SMA[t] × 100
+
+    Null-prefix: ``period − 1`` bars.
+
+    Args:
+        series: Close price series.
+        period: SMA lookback (default 14).
+
+    Returns:
+        Series of Disparity Index values (%) named ``disparity_{period}``.
+
+    Raises:
+        ValueError: If ``period < 1``.
+
+    References:
+        - Investopedia — Disparity Index:
+          https://www.investopedia.com/terms/d/disparityindex.asp
+        - Kaufman, P. J. *Trading Systems and Methods*, 5th ed. (2013), p. 70.
+    """
+    _validate_period(period, "Disparity Index")
+    sma_vals = sma(series, period)
+    safe_sma = sma_vals.replace(0.0, float("nan"))
+    return ((series - sma_vals) / safe_sma * 100.0).alias(f"disparity_{period}")
+
+
+# ---------------------------------------------------------------------------
+# Absolute Price Oscillator (APO)
+# ---------------------------------------------------------------------------
+
+
+def apo(series: pl.Series, fast: int = 12, slow: int = 26) -> pl.Series:
+    """Absolute Price Oscillator — difference of two EMAs in price units.
+
+    The APO (sometimes called the Price Oscillator) subtracts a slow EMA from
+    a fast EMA.  Unlike the PPO it reports the absolute difference in price
+    units rather than a percentage, making it easier to overlay on a price
+    chart.  A positive APO means the fast EMA is above the slow EMA
+    (bullish momentum); a negative APO indicates bearish momentum.
+
+    Algorithm:
+        APO[t] = EMA(close, fast) − EMA(close, slow)
+
+    Null-prefix: ``slow − 1`` bars (the slower EMA dominates).
+
+    Args:
+        series: Close price series.
+        fast: Fast EMA period (default 12).
+        slow: Slow EMA period (default 26).
+
+    Returns:
+        Series of APO values named ``apo_{fast}_{slow}``.
+
+    Raises:
+        ValueError: If ``fast < 1``, ``slow < 1``, or ``fast >= slow``.
+
+    References:
+        - Investopedia — Price Oscillator:
+          https://www.investopedia.com/terms/p/ppo.asp
+        - TA-Lib APO: https://ta-lib.org/function.html#APO
+    """
+    _validate_period(fast, "APO fast")
+    _validate_period(slow, "APO slow")
+    if fast >= slow:
+        raise ValueError(f"APO fast ({fast}) must be less than slow ({slow}).")
+    return (ema(series, fast) - ema(series, slow)).alias(f"apo_{fast}_{slow}")
+
+
+# ---------------------------------------------------------------------------
+# Accumulative Swing Index (ASI)
+# ---------------------------------------------------------------------------
+
+
+def asi(ohlc: pl.DataFrame, limit_move: float = 3.0) -> pl.Series:
+    """Accumulative Swing Index — Wilder's cumulative directional indicator.
+
+    The Swing Index (SI) quantifies intraday price action on a single bar by
+    comparing the current bar's close to the prior bar's close, open, and range,
+    with a normalisation factor ``R`` that scales the sensitivity.  The
+    Accumulative Swing Index (ASI) is the running cumulative sum of SI and is
+    used to confirm breakouts: a breakout in price should be accompanied by a
+    new high or low in ASI.
+
+    Wilder's SI formula (1978):
+        K         = max(|H − Cp|, |L − Cp|)
+        R chosen by the largest of |H − Cp|, |L − Cp|, |H − L|:
+            case 1 (|H − Cp| ≥ both): R = |H − Cp| − 0.5|L − Cp| + 0.25|Cp − Op|
+            case 2 (|L − Cp| ≥ both): R = |L − Cp| − 0.5|H − Cp| + 0.25|Cp − Op|
+            case 3 (otherwise):        R = |H − L|  + 0.25|Cp − Op|
+        SI[t] = 50 × (C − Cp + 0.5(C − O) + 0.25(Cp − Op)) / R × (K / T)
+        ASI[t] = cumulative sum of SI
+
+    Null-prefix: ``1`` bar (no prior OHLC data at bar 0).
+
+    Args:
+        ohlc: DataFrame with columns ``open``, ``high``, ``low``, ``close``.
+        limit_move: Maximum allowable daily price move (T in Wilder's formula).
+                    Use the exchange-defined limit; default 3.0 is a common
+                    placeholder for equities.
+
+    Returns:
+        Series of ASI values named ``asi``.  The first value is ``null``.
+
+    References:
+        - Wilder, J. W. *New Concepts in Technical Trading Systems* (1978),
+          Chapter 9.
+        - Investopedia — Accumulative Swing Index:
+          https://www.investopedia.com/terms/a/asi.asp
+    """
+    h = ohlc["high"]
+    lo = ohlc["low"]
+    c = ohlc["close"]
+    o = ohlc["open"]
+    cp = c.shift(1)
+    op = o.shift(1)
+
+    # Absolute distances used throughout the formula.
+    a = (h - cp).abs()
+    b = (lo - cp).abs()
+    c_hl = (h - lo).abs()
+    d = (cp - op).abs()
+
+    # K = larger of |H − Cp| and |L − Cp|.
+    k = pl.select(pl.max_horizontal(a, b)).to_series()
+
+    # R selection via the dominant distance.
+    r = (
+        pl.when((a >= b) & (a >= c_hl))
+        .then(a - 0.5 * b + 0.25 * d)
+        .when((b >= a) & (b >= c_hl))
+        .then(b - 0.5 * a + 0.25 * d)
+        .otherwise(c_hl + 0.25 * d)
+    )
+    safe_r = r.replace(0.0, float("nan"))
+
+    numerator = c - cp + 0.5 * (c - o) + 0.25 * (cp - op)
+    si = 50.0 * numerator / safe_r * (k / limit_move)
+
+    # Fill NaN (degenerate zero-range bars) to 0 before accumulation.
+    # Restore null at bar 0 (no prior bar), then accumulate.
+    si_clean = si.fill_nan(0.0)
+    asi_vals = si_clean.fill_null(0.0).cum_sum()
+    # Re-apply the leading null: bar 0 has no prior context.
+    result = pl.when(si.is_null()).then(pl.lit(None, dtype=pl.Float64)).otherwise(asi_vals)
+    return pl.select(result).to_series().alias("asi")
+
+
+# ---------------------------------------------------------------------------
+# Price Momentum Oscillator (PMO)
+# ---------------------------------------------------------------------------
+
+
+def pmo(series: pl.Series, fast: int = 35, slow: int = 20) -> pl.Series:
+    """Price Momentum Oscillator — double-smoothed rate-of-change.
+
+    The PMO (Carl Swenlin, 1994) takes the daily percentage rate-of-change,
+    scales it by 10, then applies two successive EMAs to reduce noise.  It is
+    momentum-based like MACD but uses ROC as input rather than raw price,
+    making it more responsive to acceleration and deceleration of price moves.
+
+    Algorithm:
+        ROC1[t]  = (close[t] / close[t−1] − 1) × 100        (1-period % change)
+        PMO1[t]  = EMA(ROC1 × 10, fast)                      (first smoothing)
+        PMO[t]   = EMA(PMO1, slow)                           (second smoothing)
+
+    Null-prefix: ``fast + slow − 1`` bars.
+    - ROC1 contributes 1 null (shift by 1).
+    - First EMA adds ``fast − 1`` nulls → ``fast`` total.
+    - Second EMA adds ``slow − 1`` nulls → ``fast + slow − 1`` total.
+
+    Args:
+        series: Close price series.
+        fast: Period of the first EMA smoothing (default 35).
+        slow: Period of the second EMA smoothing (default 20).
+
+    Returns:
+        Series of PMO values named ``pmo_{fast}_{slow}``.
+
+    Raises:
+        ValueError: If ``fast < 1`` or ``slow < 1``.
+
+    References:
+        - Swenlin, C. "Price Momentum Oscillator," *Technical Analysis of
+          Stocks & Commodities* (1994).
+        - StockCharts — PMO:
+          https://school.stockcharts.com/doku.php?id=technical_indicators:price_momentum_oscillator_pmo
+    """
+    _validate_period(fast, "PMO fast")
+    _validate_period(slow, "PMO slow")
+    # ROC as a fraction × 10; shift(1) introduces the first null.
+    prev = series.shift(1)
+    safe_prev = prev.replace(0.0, float("nan"))
+    roc1 = (series / safe_prev - 1.0) * 1000.0  # ×100 for % then ×10 = ×1000
+    pmo1 = ema(roc1, fast)
+    return ema(pmo1, slow).alias(f"pmo_{fast}_{slow}")
+
+
+# ---------------------------------------------------------------------------
+# Chande Trend Score
+# ---------------------------------------------------------------------------
+
+
+def chande_trend_score(series: pl.Series, period: int = 20) -> pl.Series:
+    """Chande Trend Score — percentage of prior bars the current close exceeds.
+
+    For each bar, the Chande Trend Score (CTS) looks back over the preceding
+    *period* bars and counts how many of them had a close below the current
+    bar's close.  The count is divided by *period* and expressed as a
+    percentage.  A score near 100 means the current bar is above virtually
+    all recent history (strong uptrend); near 0 means the opposite.
+
+    Unlike the Psychological Line (which counts rising bar-over-bar changes),
+    CTS compares the current price directly to each of the *period* prior
+    prices, measuring the current bar's percentile within its own lookback.
+
+    Algorithm (rolling window of size ``period + 1``):
+        window = [close[t−period], …, close[t−1], close[t]]
+        CTS[t] = (# prior bars with close < close[t]) / period × 100
+
+    Null-prefix: ``period`` bars.
+
+    Args:
+        series: Close price series.
+        period: Number of prior bars to compare against (default 20).
+
+    Returns:
+        Series of CTS values in [0, 100] named ``cts_{period}``.
+
+    Raises:
+        ValueError: If ``period < 1``.
+
+    References:
+        - Chande, T. S. & Kroll, S. *The New Technical Trader* (1994),
+          Chapter 4.
+        - Kaufman, P. J. *Trading Systems and Methods*, 5th ed. (2013).
+    """
+    _validate_period(period, "Chande Trend Score")
+
+    def _cts_window(w: pl.Series) -> float:
+        """Count how many of the first `period` elements are below the last."""
+        vals: list[float] = w.to_list()
+        current = vals[-1]
+        # Count prior bars strictly below current close.
+        count = sum(1 for v in vals[:-1] if v < current)
+        return count / period * 100.0
+
+    # Window = period prior bars + current bar → size period + 1.
+    return series.rolling_map(
+        function=_cts_window,
+        window_size=period + 1,
+        min_samples=period + 1,
+    ).alias(f"cts_{period}")
