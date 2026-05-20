@@ -7,6 +7,50 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [0.5.0] — 2026-05-20
+
+### Added
+
+#### Moving Averages
+- `trima(series, period)` — Triangular Moving Average; double-smoothed SMA with triangular weight profile; `period − 1` leading nulls
+- `vidya(series, cmo_period=9, alpha=0.2)` — Variable Index Dynamic Average; CMO-adaptive EMA; `cmo_period` leading nulls
+
+#### Momentum
+- `crsi(series, rsi_period=3, streak_period=2, rank_period=100)` — Connors RSI; composite of RSI, streak RSI, and rolling percent rank
+- `qstick(ohlc, period=8)` — Q-Stick; EMA of close minus open; intraday directional bias
+- `psy_line(series, period=14)` — Psychological Line; percentage of rising bars in a rolling window
+- `rocr(series, period=10)` — Rate of Change Ratio; `close / close[n]`
+
+#### Trend
+- `vhf(series, period=28)` — Vertical Horizontal Filter; quantifies trending vs. ranging regime
+- `pfe(series, period=14, smooth=5)` — Polarized Fractal Efficiency; directional path-efficiency oscillator
+- `chande_forecast_oscillator(series, period=14)` — % deviation of close from the Time Series Forecast
+- `linreg_r2(series, period=14)` — Rolling R² coefficient of determination
+- `tii(series, period=20)` — Trend Intensity Index; fraction of closes above/below the SMA
+
+#### Volatility
+- `bbw(series, period=20, num_std=2.0)` — Bollinger Band Width; `(upper − lower) / middle`; normalised spread
+- `bbp(series, period=20, num_std=2.0)` — Bollinger %B; price position within Bollinger Bands
+- `realized_variance(series, period=20, annualize=True)` — Rolling annualised sum of squared log-returns
+
+#### Volume
+- `rvol(ohlc_vol, period=20)` — Relative Volume; current volume relative to its rolling average
+- `obv_osc(ohlc_vol, fast=5, slow=10)` — OBV Oscillator; EMA spread of On-Balance Volume
+- `volume_roc(ohlc_vol, period=14)` — Volume Rate of Change; percentage change in trading volume
+
+#### Candlestick Patterns
+- `is_dragonfly_doji(ohlc, ...)` — Doji with long lower shadow and minimal upper shadow
+- `is_gravestone_doji(ohlc, ...)` — Doji with long upper shadow and minimal lower shadow
+- `is_spinning_top(ohlc, ...)` — Small non-doji body with roughly equal upper and lower wicks
+
+### Tests
+- 145 new unit tests across `test_v05_indicators.py` and `test_null_prefix.py` (948 total)
+
+### Fixed
+- mypy strict-mode errors in CRSI streak loop (`momentum.py`) and squeeze momentum LRV helper (`volatility.py`)
+
+---
+
 ## [0.3.0] — 2026-05-14
 
 ### Added
