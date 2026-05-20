@@ -35,6 +35,23 @@ Expected-null formulas used throughout:
     period - 1          parkinson, garman_klass, williams_vix_fix
     period              yang_zhang (overnight shift adds 1 extra null)
     period + 1          var_mov_avg (seeded at period, first output at period+1)
+    period - 1          trima  (two-pass SMA, total warm-up period-1)
+    cmo_period          vidya  (seeded at first valid VI bar)
+    max(rsi_p, streak_p, rank_p-1)  crsi  (driven by slowest component)
+    period - 1          qstick (EMA of body diff)
+    period              psy_line (diff adds one extra null)
+    period              rocr   (shift-based)
+    period              vhf    (diff adds one extra null; max with rolling max/min)
+    period + smooth - 1 pfe    (EMA of diff-seeded efficiency)
+    period - 1          chande_forecast_oscillator (same as TSF)
+    period - 1          linreg_r2 (same as linreg_slope)
+    2*(period-1)        tii    (SMA then rolling count, each adds period-1)
+    period - 1          bbw, bbp (from Bollinger Bands)
+    period              realized_variance (diff adds one extra null)
+    period - 1          rvol   (rolling SMA of volume)
+    slow - 1            obv_osc (driven by slow EMA of OBV)
+    period              volume_roc (shift-based)
+    0                   is_dragonfly_doji, is_gravestone_doji, is_spinning_top
 """
 
 from __future__ import annotations
@@ -1066,3 +1083,156 @@ class TestHurstExponentNullPrefix:
 
     def test_null_count(self) -> None:
         assert _leading_nulls(polarticks.hurst_exponent(_CLOSE, 20)) == 20
+
+
+# ---------------------------------------------------------------------------
+# v0.5.0 indicators
+# ---------------------------------------------------------------------------
+
+
+class TestTRIMANullPrefix:
+    """TRIMA: period-1 leading nulls (two-pass SMA)."""
+
+    def test_null_count(self) -> None:
+        assert _leading_nulls(polarticks.trima(_CLOSE, _P)) == _P - 1
+
+
+class TestVIDYANullPrefix:
+    """VIDYA: cmo_period leading nulls."""
+
+    def test_null_count(self) -> None:
+        assert _leading_nulls(polarticks.vidya(_CLOSE, cmo_period=_P)) == _P
+
+
+class TestCRSINullPrefix:
+    """CRSI: max(rsi_period, streak_period, rank_period-1) leading nulls."""
+
+    def test_null_count_rank_period_dominates(self) -> None:
+        # With rsi=3, streak=2, rank=10: max(3, 2, 9) = 9.
+        assert (
+            _leading_nulls(polarticks.crsi(_CLOSE, rsi_period=3, streak_period=2, rank_period=10))
+            == 9
+        )
+
+    def test_null_count_rsi_period_dominates(self) -> None:
+        # With rsi=15, streak=2, rank=5: max(15, 2, 4) = 15.
+        assert (
+            _leading_nulls(polarticks.crsi(_CLOSE, rsi_period=15, streak_period=2, rank_period=5))
+            == 15
+        )
+
+
+class TestQStickNullPrefix:
+    """Q-Stick: period-1 leading nulls (EMA of body diff)."""
+
+    def test_null_count(self) -> None:
+        assert _leading_nulls(polarticks.qstick(_DF, period=_P)) == _P - 1
+
+
+class TestPsyLineNullPrefix:
+    """Psychological Line: period leading nulls (diff adds one extra null)."""
+
+    def test_null_count(self) -> None:
+        assert _leading_nulls(polarticks.psy_line(_CLOSE, period=_P)) == _P
+
+
+class TestROCRNullPrefix:
+    """ROCR: period leading nulls (shift-based)."""
+
+    def test_null_count(self) -> None:
+        assert _leading_nulls(polarticks.rocr(_CLOSE, period=_P)) == _P
+
+
+class TestVHFNullPrefix:
+    """VHF: period leading nulls (diff adds one extra null)."""
+
+    def test_null_count(self) -> None:
+        assert _leading_nulls(polarticks.vhf(_CLOSE, period=_P)) == _P
+
+
+class TestPFENullPrefix:
+    """PFE: period + smooth - 1 leading nulls."""
+
+    def test_null_count(self) -> None:
+        smooth = 3
+        assert _leading_nulls(polarticks.pfe(_CLOSE, period=_P, smooth=smooth)) == _P + smooth - 1
+
+
+class TestChandeForecastOscillatorNullPrefix:
+    """Chande Forecast Oscillator: period-1 leading nulls (same as TSF)."""
+
+    def test_null_count(self) -> None:
+        assert _leading_nulls(polarticks.chande_forecast_oscillator(_CLOSE, period=_P)) == _P - 1
+
+
+class TestLinregR2NullPrefix:
+    """Linear Regression R²: period-1 leading nulls."""
+
+    def test_null_count(self) -> None:
+        assert _leading_nulls(polarticks.linreg_r2(_CLOSE, period=_P)) == _P - 1
+
+
+class TestTIINullPrefix:
+    """TII: 2*(period-1) leading nulls."""
+
+    def test_null_count(self) -> None:
+        assert _leading_nulls(polarticks.tii(_CLOSE, period=_P)) == 2 * (_P - 1)
+
+
+class TestBBWNullPrefix:
+    """BBW: period-1 leading nulls (from Bollinger Bands)."""
+
+    def test_null_count(self) -> None:
+        assert _leading_nulls(polarticks.bbw(_CLOSE, period=_P)) == _P - 1
+
+
+class TestBBPNullPrefix:
+    """BBP: period-1 leading nulls (from Bollinger Bands)."""
+
+    def test_null_count(self) -> None:
+        assert _leading_nulls(polarticks.bbp(_CLOSE, period=_P)) == _P - 1
+
+
+class TestRealizedVarianceNullPrefix:
+    """Realized Variance: period leading nulls (diff adds one extra null)."""
+
+    def test_null_count(self) -> None:
+        assert _leading_nulls(polarticks.realized_variance(_CLOSE, period=_P)) == _P
+
+
+class TestRVOLNullPrefix:
+    """RVOL: period-1 leading nulls (rolling SMA of volume)."""
+
+    def test_null_count(self) -> None:
+        assert _leading_nulls(polarticks.rvol(_DF, period=_P)) == _P - 1
+
+
+class TestOBVOscNullPrefix:
+    """OBV Oscillator: slow-1 leading nulls."""
+
+    def test_null_count(self) -> None:
+        fast, slow = 3, _P
+        assert _leading_nulls(polarticks.obv_osc(_DF, fast=fast, slow=slow)) == slow - 1
+
+
+class TestVolumeROCNullPrefix:
+    """Volume ROC: period leading nulls (shift-based)."""
+
+    def test_null_count(self) -> None:
+        assert _leading_nulls(polarticks.volume_roc(_DF, period=_P)) == _P
+
+
+class TestPatternNewNullPrefix:
+    """New single-bar patterns: 0 leading nulls."""
+
+    def test_dragonfly_doji_no_nulls(self) -> None:
+        result = polarticks.is_dragonfly_doji(_DF)
+        assert _leading_nulls(result) == 0
+
+    def test_gravestone_doji_no_nulls(self) -> None:
+        result = polarticks.is_gravestone_doji(_DF)
+        assert _leading_nulls(result) == 0
+
+    def test_spinning_top_no_nulls(self) -> None:
+        result = polarticks.is_spinning_top(_DF)
+        assert _leading_nulls(result) == 0
