@@ -118,7 +118,44 @@
 
 ---
 
+## New indicators (v0.5.0 roadmap)
+
+### Moving averages
+- [x] **TRIMA** (`trima`) — Triangular MA; double-smoothed SMA with triangular weight profile.
+- [x] **VIDYA** (`vidya`) — Variable Index Dynamic Average; CMO-adaptive EMA.
+
+### Momentum / oscillators
+- [x] **Connors RSI** (`crsi`) — Composite of RSI(3), streak RSI, and rolling percent rank.
+- [x] **Q-Stick** (`qstick`) — EMA of close-minus-open; intraday directional bias.
+- [x] **Psychological Line** (`psy_line`) — Percentage of rising bars in rolling window.
+- [x] **ROCR** (`rocr`) — Rate of Change Ratio (close / close[n]); ratio form of ROC.
+
+### Trend
+- [x] **VHF** (`vhf`) — Vertical Horizontal Filter; quantifies trending vs. ranging regime.
+- [x] **PFE** (`pfe`) — Polarized Fractal Efficiency; directional path-efficiency oscillator.
+- [x] **Chande Forecast Oscillator** (`chande_forecast_oscillator`) — % deviation of close from TSF.
+- [x] **Linear Regression R²** (`linreg_r2`) — Rolling R² coefficient of determination.
+- [x] **Trend Intensity Index** (`tii`) — Fraction of closes above/below the SMA.
+
+### Volatility
+- [x] **Bollinger Band Width** (`bbw`) — (upper − lower) / middle; normalised spread.
+- [x] **Bollinger %B** (`bbp`) — Price position within Bollinger Bands.
+- [x] **Realized Variance** (`realized_variance`) — Rolling annualised sum of squared log-returns.
+
+### Volume
+- [x] **Relative Volume** (`rvol`) — Current volume relative to its rolling average.
+- [x] **OBV Oscillator** (`obv_osc`) — EMA spread of On-Balance Volume.
+- [x] **Volume Rate of Change** (`volume_roc`) — Percentage change in trading volume.
+
+### Candlestick patterns
+- [x] **Dragonfly Doji** (`is_dragonfly_doji`) — Doji with long lower shadow.
+- [x] **Gravestone Doji** (`is_gravestone_doji`) — Doji with long upper shadow.
+- [x] **Spinning Top** (`is_spinning_top`) — Small body with equal upper and lower wicks.
+
+---
+
 ## Packaging
 - [x] **PyPI release** — bump to `0.1.0`, write `CHANGELOG.md`, publish to PyPI.
 - [x] **Benchmark suite** — `tests/benchmark/` using `pytest-benchmark` to track performance on a 100k-bar series across all indicators.
 - [x] **`py.typed` marker** — already present; verify downstream mypy usage works end-to-end.
+- [ ] **Bump to v0.5.0** — update `pyproject.toml` version, add CHANGELOG entry, publish to PyPI.
