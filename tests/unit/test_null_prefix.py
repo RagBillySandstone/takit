@@ -51,6 +51,24 @@ Expected-null formulas used throughout:
     period - 1          rvol   (rolling SMA of volume)
     slow - 1            obv_osc (driven by slow EMA of OBV)
     period              volume_roc (shift-based)
+    period + sqrt(period) - 2  ehma  (EMA chain with de-lag)
+    period - 1          pwma   (rolling weighted average)
+    period - 1          disparity_index (SMA-based)
+    slow - 1            apo    (EMA difference; slow EMA dominates)
+    1                   asi    (needs one prior bar for swing index)
+    fast + slow - 1     pmo    (double-EMA of 1-period ROC)
+    period              chande_trend_score (window = period+1 → period leading nulls)
+    period - 1          ma_envelope (SMA-based)
+    period - 1          linreg_intercept (rolling OLS)
+    period - 1          standard_error_bands (rolling OLS)
+    period - 1          cog    (rolling weighted sum)
+    period              rwi    (ATR + shift; ATR uses period leading nulls)
+    period - 1          coefficient_of_variation (rolling std/mean)
+    period              efficiency_ratio (shift + rolling sum; both need period bars)
+    period - 1          standard_error (rolling OLS, period >= 3)
+    period - 1          vzo    (EMA of signed volume)
+    0                   mfi_bw, volume_delta (bar-by-bar computations)
+    0                   is_marubozu_bullish, is_marubozu_bearish (single-bar patterns)
     0                   is_dragonfly_doji, is_gravestone_doji, is_spinning_top
 """
 
@@ -1236,3 +1254,145 @@ class TestPatternNewNullPrefix:
     def test_spinning_top_no_nulls(self) -> None:
         result = polarticks.is_spinning_top(_DF)
         assert _leading_nulls(result) == 0
+
+
+# ---------------------------------------------------------------------------
+# v0.6.0 additions
+# ---------------------------------------------------------------------------
+
+
+class TestEHMANullPrefix:
+    """EHMA: EMA chain → period + sqrt(period) - 2 leading nulls."""
+
+    def test_null_count(self) -> None:
+        sqrt_p = max(2, round(math.sqrt(_P)))
+        expected = _P + sqrt_p - 2
+        assert _leading_nulls(polarticks.ehma(_CLOSE, _P)) == expected
+
+
+class TestPWMANullPrefix:
+    """PWMA: single rolling window → period - 1 leading nulls."""
+
+    def test_null_count(self) -> None:
+        assert _leading_nulls(polarticks.pwma(_CLOSE, _P)) == _P - 1
+
+
+class TestDisparityIndexNullPrefix:
+    """Disparity Index: SMA-based → period - 1 leading nulls."""
+
+    def test_null_count(self) -> None:
+        assert _leading_nulls(polarticks.disparity_index(_CLOSE, _P)) == _P - 1
+
+
+class TestAPONullPrefix:
+    """APO: driven by the slow EMA → slow - 1 leading nulls."""
+
+    def test_null_count(self) -> None:
+        slow = _P
+        fast = max(1, slow // 2)
+        assert _leading_nulls(polarticks.apo(_CLOSE, fast=fast, slow=slow)) == slow - 1
+
+
+class TestASINullPrefix:
+    """ASI: needs one prior bar → 1 leading null."""
+
+    def test_null_count(self) -> None:
+        assert _leading_nulls(polarticks.asi(_DF)) == 1
+
+
+class TestPMONullPrefix:
+    """PMO: double-EMA of 1-period ROC → fast + slow - 1 leading nulls."""
+
+    def test_null_count(self) -> None:
+        fast, slow = _P, max(2, _P // 2)
+        assert _leading_nulls(polarticks.pmo(_CLOSE, fast=fast, slow=slow)) == fast + slow - 1
+
+
+class TestChandeTrendScoreNullPrefix:
+    """CTS: window = period + 1 → period leading nulls."""
+
+    def test_null_count(self) -> None:
+        assert _leading_nulls(polarticks.chande_trend_score(_CLOSE, _P)) == _P
+
+
+class TestMAEnvelopeNullPrefix:
+    """MA Envelope: SMA-based → period - 1 leading nulls."""
+
+    def test_null_count(self) -> None:
+        result = polarticks.ma_envelope(_CLOSE, _P)
+        assert _leading_nulls(result[f"mae_middle_{_P}"]) == _P - 1
+
+
+class TestLinregInterceptNullPrefix:
+    """LinReg Intercept: rolling OLS → period - 1 leading nulls."""
+
+    def test_null_count(self) -> None:
+        assert _leading_nulls(polarticks.linreg_intercept(_CLOSE, _P)) == _P - 1
+
+
+class TestStandardErrorBandsNullPrefix:
+    """Standard Error Bands: rolling OLS → period - 1 leading nulls."""
+
+    def test_null_count(self) -> None:
+        result = polarticks.standard_error_bands(_CLOSE, max(3, _P))
+        assert _leading_nulls(result[f"seb_middle_{max(3, _P)}"]) == max(3, _P) - 1
+
+
+class TestCOGNullPrefix:
+    """COG: rolling weighted average → period - 1 leading nulls."""
+
+    def test_null_count(self) -> None:
+        assert _leading_nulls(polarticks.cog(_CLOSE, _P)) == _P - 1
+
+
+class TestRWINullPrefix:
+    """RWI: ATR + period-shift → period leading nulls."""
+
+    def test_null_count(self) -> None:
+        result = polarticks.rwi(_DF, _P)
+        assert _leading_nulls(result[f"rwi_high_{_P}"]) == _P
+
+
+class TestCoefficientOfVariationNullPrefix:
+    """CV: rolling std/mean → period - 1 leading nulls."""
+
+    def test_null_count(self) -> None:
+        assert _leading_nulls(polarticks.coefficient_of_variation(_CLOSE, _P)) == _P - 1
+
+
+class TestEfficiencyRatioNullPrefix:
+    """Efficiency Ratio: shift + rolling sum → period leading nulls."""
+
+    def test_null_count(self) -> None:
+        assert _leading_nulls(polarticks.efficiency_ratio(_CLOSE, _P)) == _P
+
+
+class TestStandardErrorNullPrefix:
+    """Standard Error: rolling OLS → period - 1 leading nulls."""
+
+    def test_null_count(self) -> None:
+        p = max(3, _P)
+        assert _leading_nulls(polarticks.standard_error(_CLOSE, p)) == p - 1
+
+
+class TestVZONullPrefix:
+    """VZO: EMA of signed volume → period - 1 leading nulls."""
+
+    def test_null_count(self) -> None:
+        assert _leading_nulls(polarticks.vzo(_DF, _P)) == _P - 1
+
+
+class TestNewPatternNullPrefix:
+    """New single-bar patterns: no warm-up → 0 leading nulls."""
+
+    def test_marubozu_bullish_no_nulls(self) -> None:
+        assert _leading_nulls(polarticks.is_marubozu_bullish(_DF)) == 0
+
+    def test_marubozu_bearish_no_nulls(self) -> None:
+        assert _leading_nulls(polarticks.is_marubozu_bearish(_DF)) == 0
+
+    def test_mfi_bw_no_nulls(self) -> None:
+        assert _leading_nulls(polarticks.mfi_bw(_DF)) == 0
+
+    def test_volume_delta_no_nulls(self) -> None:
+        assert _leading_nulls(polarticks.volume_delta(_DF)) == 0
