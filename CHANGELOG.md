@@ -43,8 +43,14 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `is_marubozu_bullish(ohlc, ...)` — Bullish Marubozu; full-body candle with minimal or no wicks
 - `is_marubozu_bearish(ohlc, ...)` — Bearish Marubozu; full-body bearish candle with minimal wicks
 
+### Fixed
+- **Supertrend direction** — direction is now sticky and only flips when close crosses the opposite band; the previous implementation recomputed direction stateless on each bar, causing immediate reversals in trending markets
+- **VWAP / vwap_bands session detection** — session reset now fires only on the first bar entering `session_start_hour` (hour transition), not on every bar within that hour; M1/M5 data was resetting VWAP up to 60 times per session
+- **`crossover` / `crossunder` bar-0** — bar 0 is now always `False`; a crossing requires a prior bar to cross *from*, and the previous sentinel `fill_null(-1.0)` was manufacturing a spurious signal on the first bar
+
 ### Tests
-- 147 new unit tests in `test_v06_indicators.py` (1095 total)
+- 147 new unit tests in `test_v06_indicators.py`
+- 4 regression tests for the three bugs fixed above (1099 total)
 
 ---
 
