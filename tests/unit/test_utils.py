@@ -23,12 +23,24 @@ class TestCrossover:
         result = crossover(fast, slow)
         assert result.to_list() == [False, False, True]
 
-    def test_first_bar_fires_when_fast_starts_above(self) -> None:
-        """The null sentinel (-1.0) means bar 0 counts as a cross when fast > slow."""
+    def test_bar_0_is_never_a_crossover(self) -> None:
+        """Bar 0 has no prior state; a crossing cannot be confirmed; must be False.
+
+        fast starts above slow from the first bar — there is no prior bar where
+        fast was at or below slow, so no crossing occurred.
+        """
         fast = pl.Series([3.0, 4.0, 5.0])
         slow = pl.Series([1.0, 1.0, 1.0])
         result = crossover(fast, slow)
-        assert result.to_list() == [True, False, False]
+        assert result.to_list() == [False, False, False]
+
+    def test_bar_0_false_even_when_fast_crosses_on_bar_1(self) -> None:
+        """Bar 0 false + actual crossing on bar 2 must produce [False, False, True]."""
+        # fast=[10,9,11] vs slow=[5,10,10]: bar 0 above already, bar 1 below, bar 2 crosses
+        fast = pl.Series([10.0, 9.0, 11.0])
+        slow = pl.Series([5.0, 10.0, 10.0])
+        result = crossover(fast, slow)
+        assert result.to_list() == [False, False, True]
 
     def test_no_signal_when_fast_stays_below(self) -> None:
         fast = pl.Series([1.0, 1.0, 1.0])
@@ -70,7 +82,8 @@ class TestCrossover:
     def test_single_bar_returns_one_element(self) -> None:
         result = crossover(pl.Series([5.0]), pl.Series([3.0]))
         assert len(result) == 1
-        assert result[0] is True
+        # Single bar has no prior state — cannot confirm a crossing.
+        assert result[0] is False
 
 
 class TestCrossunder:
@@ -83,12 +96,16 @@ class TestCrossunder:
         result = crossunder(fast, slow)
         assert result.to_list() == [False, False, True]
 
-    def test_first_bar_fires_when_fast_starts_below(self) -> None:
-        """The null sentinel (-1.0) means bar 0 counts as a cross when fast < slow."""
+    def test_bar_0_is_never_a_crossunder(self) -> None:
+        """Bar 0 has no prior state; a crossing cannot be confirmed; must be False.
+
+        fast starts below slow from the first bar — there is no prior bar where
+        fast was at or above slow, so no crossing occurred.
+        """
         fast = pl.Series([1.0, 1.0, 1.0])
         slow = pl.Series([2.0, 2.0, 2.0])
         result = crossunder(fast, slow)
-        assert result.to_list() == [True, False, False]
+        assert result.to_list() == [False, False, False]
 
     def test_no_signal_when_fast_stays_above(self) -> None:
         fast = pl.Series([3.0, 3.0, 3.0])

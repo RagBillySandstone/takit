@@ -36,6 +36,9 @@ def crossover(fast: pl.Series, slow: pl.Series, atol: float = 0.0) -> pl.Series:
     tiny numerical noise near the crossing level cannot trigger a spurious
     double-signal.  Leave at the default ``0.0`` for exact comparison.
 
+    Bar 0 is always ``False``: a crossing requires a prior bar to cross *from*,
+    so the first bar can never be a crossover regardless of the values.
+
     Args:
         fast: The faster (more responsive) series.
         slow: The slower (less responsive) series.
@@ -47,9 +50,9 @@ def crossover(fast: pl.Series, slow: pl.Series, atol: float = 0.0) -> pl.Series:
     diff = fast - slow
     # Treat values within atol of zero as "not yet above".
     above_now = diff > atol
-    # Use a large negative sentinel for the null on bar 0 so the first bar
-    # can legitimately fire as a crossover if it starts above.
-    above_prev = diff.shift(1).fill_null(-1.0) > atol
+    # fill_null(True) on the boolean: bar 0 is treated as "was already above",
+    # so ~above_prev is False and crossover cannot fire without a prior bar.
+    above_prev = (diff.shift(1) > atol).fill_null(True)
     return (above_now & ~above_prev).alias("crossover")
 
 
@@ -62,6 +65,9 @@ def crossunder(fast: pl.Series, slow: pl.Series, atol: float = 0.0) -> pl.Series
     The optional *atol* parameter mirrors the behaviour of :func:`crossover`:
     a bar is "below" only when ``slow - fast > atol``.
 
+    Bar 0 is always ``False``: a crossing requires a prior bar to cross *from*,
+    so the first bar can never be a crossunder regardless of the values.
+
     Args:
         fast: The faster (more responsive) series.
         slow: The slower (less responsive) series.
@@ -72,7 +78,9 @@ def crossunder(fast: pl.Series, slow: pl.Series, atol: float = 0.0) -> pl.Series
     """
     diff = slow - fast
     below_now = diff > atol
-    below_prev = diff.shift(1).fill_null(-1.0) > atol
+    # fill_null(True): bar 0 is treated as "was already below",
+    # so ~below_prev is False and crossunder cannot fire without a prior bar.
+    below_prev = (diff.shift(1) > atol).fill_null(True)
     return (below_now & ~below_prev).alias("crossunder")
 
 
