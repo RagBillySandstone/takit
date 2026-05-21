@@ -128,6 +128,20 @@ class TestSupertrend:
         with pytest.raises(ValueError):
             supertrend(OHLC_LONG, 0)
 
+    def test_direction_is_sticky_in_uptrend(self) -> None:
+        """Once the Supertrend flips to +1 in a rising market it must stay +1.
+
+        The canonical algorithm carries direction forward (sticky): it only flips
+        when close crosses the *opposite* band.  A stateless recomputation on each
+        bar causes direction to toggle every time the band is reset.
+        """
+        # OHLC_LONG is a monotonically rising series (close 10.3 → 49.3).
+        # With period=3, multiplier=3.0 the first flip to +1 occurs at dirs[5].
+        result = supertrend(OHLC_LONG, period=3, multiplier=3.0)
+        dirs = result["supertrend_direction"].drop_nulls().to_list()
+        # After the first flip to +1, direction must not revert during a clear uptrend.
+        assert all(d == 1 for d in dirs[5:]), f"Direction reverted in uptrend: {dirs}"
+
 
 class TestParabolicSAR:
     def test_returns_two_columns(self) -> None:

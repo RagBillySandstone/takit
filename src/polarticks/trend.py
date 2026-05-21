@@ -184,7 +184,9 @@ def supertrend(
             Else:
                 final_lower[t] = final_lower[t-1]
 
-        direction: +1 when close > final_upper (bullish), -1 otherwise.
+        direction: initialised from the first valid bar, then sticky —
+            flips from +1 to -1 only when close falls below final_lower,
+            and from -1 to +1 only when close rises above final_upper.
 
     The first ``period`` bars are ``null`` (ATR warm-up).
 
@@ -211,9 +213,10 @@ def supertrend(
     band: list[float | None] = [None] * n
     direction: list[int | None] = [None] * n
 
-    # Track the running final bands across bars (sequential by nature).
+    # Track the running final bands and sticky direction across bars.
     final_upper = 0.0
     final_lower = 0.0
+    prev_direction: int = -1  # initialised at first valid bar
 
     for idx in range(n):
         if atr_vals[idx] is None:
@@ -228,6 +231,8 @@ def supertrend(
             # First bar with a valid ATR — initialise both bands.
             final_upper = basic_upper
             final_lower = basic_lower
+            # Seed direction from the first bar's close position.
+            prev_direction = 1 if close[idx] > final_upper else -1
         else:
             prev_close = close[idx - 1]
             # Upper band ratchets down (tightens) unless price broke above it.
@@ -243,13 +248,17 @@ def supertrend(
                 else final_lower
             )
 
-        # Trend direction: bullish when close is above the upper band.
-        if close[idx] > final_upper:
-            direction[idx] = 1
-            band[idx] = final_lower
+        # Sticky direction: only flip when close crosses the opposite band.
+        if prev_direction == 1:
+            # Was bullish — stay bullish unless close drops below the lower band.
+            current_direction = -1 if close[idx] < final_lower else 1
         else:
-            direction[idx] = -1
-            band[idx] = final_upper
+            # Was bearish — stay bearish unless close rises above the upper band.
+            current_direction = 1 if close[idx] > final_upper else -1
+
+        direction[idx] = current_direction
+        band[idx] = final_lower if current_direction == 1 else final_upper
+        prev_direction = current_direction
 
     return pl.DataFrame(
         {
