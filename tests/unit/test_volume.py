@@ -51,6 +51,38 @@ class TestVWAP:
         assert result[0] == pytest.approx(tp0)
         assert result[1] == pytest.approx((tp0 + tp1) / 2.0)
 
+    def test_no_multi_reset_within_session_start_hour(self) -> None:
+        """VWAP must not reset on every M1 bar that falls within session_start_hour.
+
+        On M1/M5 data the session_start_hour contains many bars (e.g. 60 for M1).
+        Only the *first* bar entering that hour should trigger a session reset.
+        """
+        times = [
+            datetime(2024, 1, 1, 22, 0, tzinfo=UTC),  # session start
+            datetime(2024, 1, 1, 22, 1, tzinfo=UTC),  # same hour — NOT a new session
+            datetime(2024, 1, 1, 22, 2, tzinfo=UTC),
+            datetime(2024, 1, 1, 22, 3, tzinfo=UTC),
+        ]
+        df = pl.DataFrame(
+            {
+                "time": pl.Series(times).cast(pl.Datetime("us", "UTC")),
+                "high": [101.0, 103.0, 105.0, 107.0],
+                "low": [99.0, 101.0, 103.0, 105.0],
+                "close": [100.0, 102.0, 104.0, 106.0],
+                "volume": [1000] * 4,
+            }
+        )
+        result = vwap(df, session_start_hour=22)
+        # All 4 bars are in the same session; equal volumes → VWAP = mean of TPs.
+        tp_values = [100.0, 102.0, 104.0, 106.0]  # (h+l+c)/3 with h=c+1, l=c-1
+        expected_final = sum(tp_values) / 4.0
+        assert result[3] == pytest.approx(expected_final), (
+            f"VWAP reset mid-session: got {result[3]:.4f}, expected {expected_final:.4f}"
+        )
+        # Accumulation check: each bar must differ from the previous.
+        for i in range(1, 4):
+            assert result[i] != pytest.approx(result[i - 1]), f"VWAP did not accumulate at bar {i}"
+
     def test_session_reset_with_time_column(self) -> None:
         # Two sessions of 3 bars each, reset at hour 22.
         times = [
@@ -178,6 +210,26 @@ class TestVWAPBandsWithTimeColumn:
         result = vwap_bands(df, session_start_hour=22)
         assert set(result.columns) == {"vwap", "upper_1", "lower_1", "upper_2", "lower_2"}
         assert len(result) == 3
+
+    def test_no_multi_reset_within_session_start_hour(self) -> None:
+        """vwap_bands must not reset on every M1 bar in session_start_hour."""
+        df = self._make_timed_df(
+            highs=[101.0, 103.0, 105.0, 107.0],
+            lows=[99.0, 101.0, 103.0, 105.0],
+            closes=[100.0, 102.0, 104.0, 106.0],
+            volumes=[1000, 1000, 1000, 1000],
+            session_start_hour=22,
+            # All 4 bars fall within the 22:xx hour (M1 granularity).
+            offset_hours=[22, 22, 22, 22],
+        )
+        result = vwap_bands(df, session_start_hour=22)
+        # All bars are one session; VWAP at bar 3 must be the 4-bar average.
+        tp_values = [100.0, 102.0, 104.0, 106.0]
+        expected_final = sum(tp_values) / 4.0
+        assert result["vwap"][3] == pytest.approx(expected_final), (
+            f"vwap_bands reset mid-session: got {result['vwap'][3]:.4f}, "
+            f"expected {expected_final:.4f}"
+        )
 
     def test_session_reset_restarts_vwap_to_typical_price(self) -> None:
         """On the first bar of a new session VWAP equals that bar's typical price."""

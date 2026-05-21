@@ -73,11 +73,11 @@ def vwap(
     # Detect session boundaries using the time column when available.
     if "time" in ohlc_vol.columns:
         hours = ohlc_vol["time"].dt.hour()
-        # A session starts on the first bar of the dataset OR on bars whose
-        # hour matches session_start_hour.
-        is_session_start = (hours == session_start_hour) | (
-            pl.Series([True] + [False] * (len(ohlc_vol) - 1))
-        )
+        # A session starts only on the FIRST bar that enters session_start_hour
+        # (the hour transitions from something else into session_start_hour).
+        # Bar 0 is always a session start (no prior bar to compare against).
+        hour_enters_session = (hours == session_start_hour) & (hours.shift(1) != session_start_hour)
+        is_session_start = hour_enters_session.fill_null(True)
     else:
         # No time column: entire series is one session — vectorise directly.
         return (tp_vol.cum_sum() / volume.cum_sum()).alias("vwap")
@@ -143,9 +143,10 @@ def vwap_bands(
 
     if "time" in ohlc_vol.columns:
         hours = ohlc_vol["time"].dt.hour()
-        is_session_start = (hours == session_start_hour) | (
-            pl.Series([True] + [False] * (len(ohlc_vol) - 1))
-        )
+        # Same transition-based detection as vwap(): only the first bar entering
+        # session_start_hour starts a new session; bar 0 always starts a session.
+        hour_enters_session = (hours == session_start_hour) & (hours.shift(1) != session_start_hour)
+        is_session_start = hour_enters_session.fill_null(True)
     else:
         # No time column: entire series is one session — vectorise directly.
         cum_tp_vol_s = tp_vol.cum_sum()
