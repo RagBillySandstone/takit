@@ -195,4 +195,4 @@
 - [x] **Benchmark suite** — `tests/benchmark/` using `pytest-benchmark` to track performance on a 100k-bar series across all indicators.
 - [x] **`py.typed` marker** — already present; verify downstream mypy usage works end-to-end.
 - [x] **Bump to v0.5.0** — update `pyproject.toml` version, add CHANGELOG entry, publish to PyPI.
-- [x] **Bump to v0.6.0** — update `pyproject.toml` version, add CHANGELOG entry, publish to PyPI.
+- [x] **Bump to v0.6.0** — update `pyproject.toml` version, add CHANGELOG entry, publish to PyPI. Fixed Supertrend direction, VWAP session detection, and crossover/crossunder bar-0 before publishing.
