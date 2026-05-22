@@ -35,6 +35,7 @@ from polarticks.momentum import (
     crsi,
     disparity_index,
     dpo,
+    dss,
     fisher_transform,
     kst,
     macd,
@@ -53,17 +54,20 @@ from polarticks.momentum import (
     stochastic,
     tsi,
     ultimate_oscillator,
+    vwrsi,
     williams_r,
 )
 from polarticks.moving_averages import (
     alma,
     dema,
+    dominant_cycle_period,
     ehma,
     ema,
     frama,
     hma,
     kama,
     laguerre,
+    mama,
     mcginley_dynamic,
     pwma,
     sma,
@@ -79,6 +83,7 @@ from polarticks.moving_averages import (
     zlema,
 )
 from polarticks.patterns import (
+    heiken_ashi,
     is_abandoned_baby_bearish,
     is_abandoned_baby_bullish,
     is_bearish_engulfing,
@@ -185,6 +190,7 @@ from polarticks.volume import (
     pvi,
     pvt,
     rvol,
+    session_range,
     twap,
     volume_delta,
     volume_oscillator,
@@ -217,6 +223,8 @@ __all__ = [
     "vidya",
     "ehma",
     "pwma",
+    "mama",
+    "dominant_cycle_period",
     # Momentum
     "rsi",
     "macd",
@@ -250,6 +258,8 @@ __all__ = [
     "asi",
     "pmo",
     "chande_trend_score",
+    "dss",
+    "vwrsi",
     # Volatility
     "true_range",
     "atr",
@@ -320,6 +330,7 @@ __all__ = [
     "vzo",
     "mfi_bw",
     "volume_delta",
+    "session_range",
     # Levels
     "pivot_points_floor",
     "pivot_points_camarilla",
@@ -355,6 +366,7 @@ __all__ = [
     "is_piercing_line",
     "is_rising_three_methods",
     "is_falling_three_methods",
+    "heiken_ashi",
     # Utils
     "crossover",
     "crossunder",

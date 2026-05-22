@@ -28,6 +28,8 @@ trima             Triangular Moving Average   (double-smoothed SMA; triangular w
 vidya             Variable Index Dynamic Average (CMO-adaptive EMA, Chande 1994)
 ehma              Exponential Hull Moving Average (EMA variant of HMA; low-lag, smooth)
 pwma              Pascal's Weighted Moving Average (binomial-coefficient weighting)
+mama              MESA Adaptive Moving Average + Following Adaptive MA  (Ehlers 2004)
+dominant_cycle_period  Hilbert Transform Dominant Cycle Period         (Ehlers 2004)
 """
 
 from __future__ import annotations
@@ -1170,3 +1172,300 @@ def pwma(series: pl.Series, period: int) -> pl.Series:
         window_size=period,
         min_samples=period,
     ).alias(f"pwma_{period}")
+
+
+# ---------------------------------------------------------------------------
+# MAMA / FAMA
+# ---------------------------------------------------------------------------
+
+
+def mama(
+    series: pl.Series,
+    fast_limit: float = 0.5,
+    slow_limit: float = 0.05,
+) -> pl.DataFrame:
+    """MESA Adaptive Moving Average (MAMA) and Following Adaptive MA (FAMA).
+
+    MAMA (Ehlers, 2004) adapts its smoothing constant in real time using the
+    phase rate-of-change derived from the Hilbert Transform Homodyne
+    Discriminator.  Fast phase rotation (trending markets) yields a large alpha
+    (price tracking); slow phase rotation (choppy markets) yields a small alpha
+    (noise filtering).  FAMA is a half-speed follower of MAMA that provides a
+    signal/confirmation line; crossovers between MAMA and FAMA generate signals.
+
+    Algorithm (Homodyne Discriminator pipeline):
+        1. 4-bar weighted price smoothing  (weights 4,3,2,1 → divisor 10).
+        2. Hilbert Transform detrender via a 6-tap kernel with adaptive gain
+           coefficient ``(0.075 × prev_period + 0.54)``.
+        3. In-phase component  I1[t] = detrender[t−3];
+           Quadrature component Q1[t] from HT of detrender.
+        4. 90-degree phase advance: jI, jQ via second HT pass on I1, Q1.
+        5. Phasor addition: I2 = I1 − jQ; Q2 = Q1 + jI.
+        6. EWM smoothing of I2, Q2 (α = 0.2).
+        7. Homodyne discriminator:
+               Re = I2[t]×I2[t−1] + Q2[t]×Q2[t−1]
+               Im = I2[t]×Q2[t−1] − Q2[t]×I2[t−1]
+           both further EWM-smoothed (α = 0.2).
+        8. Dominant cycle: period = 2π / atan(Im/Re), clamped to ±50% change
+           per bar and hard-clipped to [6, 50]; then EWM-smoothed (α = 0.2).
+        9. Instantaneous phase = atan(Q1/I1) in degrees;
+           delta_phase = max(1, phase[t−1] − phase[t]).
+       10. Adaptive alpha = clamp(fast_limit / delta_phase, slow_limit, fast_limit).
+       11. MAMA[t] = alpha × price[t] + (1 − alpha) × MAMA[t−1].
+           FAMA[t] = 0.5×alpha × MAMA[t] + (1 − 0.5×alpha) × FAMA[t−1].
+
+    Null-prefix: 6 bars (minimum for the HT kernel to have non-trivial inputs).
+    Statistical convergence typically requires ~32 bars.
+
+    Args:
+        series: Input price series (typically ``close`` or HL2).
+        fast_limit: Maximum adaptive smoothing constant (upper bound on alpha).
+                    Default 0.5.
+        slow_limit: Minimum adaptive smoothing constant (lower bound on alpha).
+                    Default 0.05.
+
+    Returns:
+        DataFrame with columns ``mama`` and ``fama``.
+        The first 6 rows are ``null``.
+
+    Raises:
+        ValueError: If the relationship ``0 < slow_limit < fast_limit ≤ 1``
+                    is not satisfied.
+
+    References:
+        - Ehlers, J. F. *Cybernetic Analysis for Stocks and Futures* (2004),
+          Chapter 3.
+        - Ehlers, J. F. "MESA and Trading Market Cycles" (1992).
+    """
+    if not (0.0 < slow_limit < fast_limit <= 1.0):
+        raise ValueError(
+            f"mama: requires 0 < slow_limit ({slow_limit}) < fast_limit ({fast_limit}) ≤ 1."
+        )
+
+    raw: list[float | None] = series.to_list()
+    n = len(raw)
+
+    # State arrays — all zero-initialised; warm-up values have negligible effect
+    # once the algorithm converges after ~32 bars.
+    smooth: list[float] = [0.0] * n
+    detrender: list[float] = [0.0] * n
+    q1: list[float] = [0.0] * n
+    i1: list[float] = [0.0] * n
+    ji: list[float] = [0.0] * n
+    jq: list[float] = [0.0] * n
+    i2: list[float] = [0.0] * n
+    q2: list[float] = [0.0] * n
+    re: list[float] = [0.0] * n
+    im: list[float] = [0.0] * n
+    period: list[float] = [0.0] * n
+    phase: list[float] = [0.0] * n
+    mama_arr: list[float] = [0.0] * n
+    fama_arr: list[float] = [0.0] * n
+
+    mama_out: list[float | None] = [None] * n
+    fama_out: list[float | None] = [None] * n
+
+    for t in range(n):
+        price = raw[t]
+        if price is None:
+            continue
+
+        # 4-bar weighted price smoothing; missing prior bars fall back to price.
+        p1 = raw[t - 1] if t >= 1 and raw[t - 1] is not None else price
+        p2 = raw[t - 2] if t >= 2 and raw[t - 2] is not None else price
+        p3 = raw[t - 3] if t >= 3 and raw[t - 3] is not None else price
+        smooth[t] = (4.0 * price + 3.0 * p1 + 2.0 * p2 + p3) / 10.0
+
+        # Seed MAMA/FAMA with the raw price during the HT warm-up window.
+        if t < 6:
+            mama_arr[t] = price
+            fama_arr[t] = price
+            continue
+
+        # Adaptive gain coefficient tied to the prior bar's cycle estimate.
+        prev_period = period[t - 1] if period[t - 1] > 0.0 else 6.0
+        coeff = 0.075 * prev_period + 0.54
+
+        # Hilbert Transform detrender (6-tap kernel with adaptive gain).
+        detrender[t] = (
+            0.0962 * smooth[t]
+            + 0.5769 * smooth[t - 2]
+            - 0.5769 * smooth[t - 4]
+            - 0.0962 * smooth[t - 6]
+        ) * coeff
+
+        # Quadrature (Q1) via HT of detrender; in-phase (I1) delayed 3 bars.
+        q1[t] = (
+            0.0962 * detrender[t]
+            + 0.5769 * detrender[t - 2]
+            - 0.5769 * detrender[t - 4]
+            - 0.0962 * detrender[t - 6]
+        ) * coeff
+        i1[t] = detrender[t - 3]
+
+        # 90-degree phase advance: apply HT to I1 and Q1 independently.
+        ji[t] = (
+            0.0962 * i1[t] + 0.5769 * i1[t - 2] - 0.5769 * i1[t - 4] - 0.0962 * i1[t - 6]
+        ) * coeff
+        jq[t] = (
+            0.0962 * q1[t] + 0.5769 * q1[t - 2] - 0.5769 * q1[t - 4] - 0.0962 * q1[t - 6]
+        ) * coeff
+
+        # Phasor addition achieves 3-bar averaging of the cycle components.
+        i2_raw = i1[t] - jq[t]
+        q2_raw = q1[t] + ji[t]
+        # EWM smoothing (α=0.2) stabilises the phasor before discriminator.
+        i2[t] = 0.2 * i2_raw + 0.8 * i2[t - 1]
+        q2[t] = 0.2 * q2_raw + 0.8 * q2[t - 1]
+
+        # Homodyne discriminator: cross-multiply current with prior phasor.
+        re_raw = i2[t] * i2[t - 1] + q2[t] * q2[t - 1]
+        im_raw = i2[t] * q2[t - 1] - q2[t] * i2[t - 1]
+        re[t] = 0.2 * re_raw + 0.8 * re[t - 1]
+        im[t] = 0.2 * im_raw + 0.8 * im[t - 1]
+
+        # Dominant cycle period from the discriminator phase angle.
+        if im[t] != 0.0 and re[t] != 0.0:
+            raw_period = 2.0 * math.pi / math.atan(im[t] / re[t])
+        else:
+            raw_period = prev_period
+        # Rate-of-change clamp: period may only change by ±50% per bar.
+        raw_period = max(0.67 * prev_period, min(1.5 * prev_period, raw_period))
+        # Hard clip to the physically meaningful range [6, 50] bars.
+        raw_period = max(6.0, min(50.0, raw_period))
+        period[t] = 0.2 * raw_period + 0.8 * prev_period
+
+        # Instantaneous phase angle in degrees (arctangent of Q/I ratio).
+        if i1[t] != 0.0:
+            phase[t] = math.degrees(math.atan(q1[t] / i1[t]))
+        else:
+            phase[t] = phase[t - 1]
+        # Phase change drives alpha; clamp to ≥1 to avoid division by zero.
+        delta_phase = max(1.0, phase[t - 1] - phase[t])
+
+        # Adaptive smoothing constant bounded between the user limits.
+        alpha = max(slow_limit, min(fast_limit, fast_limit / delta_phase))
+
+        mama_arr[t] = alpha * price + (1.0 - alpha) * mama_arr[t - 1]
+        fama_arr[t] = 0.5 * alpha * mama_arr[t] + (1.0 - 0.5 * alpha) * fama_arr[t - 1]
+
+        mama_out[t] = mama_arr[t]
+        fama_out[t] = fama_arr[t]
+
+    return pl.DataFrame(
+        {
+            "mama": pl.Series("mama", mama_out, dtype=pl.Float64),
+            "fama": pl.Series("fama", fama_out, dtype=pl.Float64),
+        }
+    )
+
+
+# ---------------------------------------------------------------------------
+# Hilbert Transform Dominant Cycle Period
+# ---------------------------------------------------------------------------
+
+
+def dominant_cycle_period(series: pl.Series) -> pl.Series:
+    """Hilbert Transform Dominant Cycle Period.
+
+    Estimates the instantaneous dominant cycle period using Ehlers' Homodyne
+    Discriminator — the same mechanism that drives MAMA's adaptive smoothing.
+    The output is useful for dynamically sizing other indicators (e.g., setting
+    an RSI or stochastic period to half the dominant cycle).
+
+    Algorithm: identical Hilbert Transform pipeline as ``mama`` (smooth →
+    detrender → I1/Q1 → jI/jQ → I2/Q2 → Re/Im → period).  Returns the
+    EWM-smoothed dominant cycle period in bars.
+
+    Null-prefix: 6 bars (minimum for the HT kernel).  Convergence ≈ 32 bars;
+    values in bars 6–31 reflect a warming-up state.
+
+    Args:
+        series: Input price series (typically ``close`` or HL2).
+
+    Returns:
+        Series named ``dominant_cycle`` with period estimates in bars
+        (range approximately 6–50 after convergence).
+        The first 6 values are ``null``.
+
+    References:
+        - Ehlers, J. F. *Cybernetic Analysis for Stocks and Futures* (2004),
+          Chapters 2–3.
+    """
+    raw: list[float | None] = series.to_list()
+    n = len(raw)
+
+    smooth: list[float] = [0.0] * n
+    detrender: list[float] = [0.0] * n
+    q1: list[float] = [0.0] * n
+    i1: list[float] = [0.0] * n
+    ji: list[float] = [0.0] * n
+    jq: list[float] = [0.0] * n
+    i2: list[float] = [0.0] * n
+    q2: list[float] = [0.0] * n
+    re: list[float] = [0.0] * n
+    im: list[float] = [0.0] * n
+    period: list[float] = [0.0] * n
+
+    output: list[float | None] = [None] * n
+
+    for t in range(n):
+        price = raw[t]
+        if price is None:
+            continue
+
+        # 4-bar weighted smoothing with fallback for bars near the start.
+        p1 = raw[t - 1] if t >= 1 and raw[t - 1] is not None else price
+        p2 = raw[t - 2] if t >= 2 and raw[t - 2] is not None else price
+        p3 = raw[t - 3] if t >= 3 and raw[t - 3] is not None else price
+        smooth[t] = (4.0 * price + 3.0 * p1 + 2.0 * p2 + p3) / 10.0
+
+        if t < 6:
+            continue  # HT kernel requires at least 6 prior smooth values
+
+        prev_period = period[t - 1] if period[t - 1] > 0.0 else 6.0
+        coeff = 0.075 * prev_period + 0.54
+
+        detrender[t] = (
+            0.0962 * smooth[t]
+            + 0.5769 * smooth[t - 2]
+            - 0.5769 * smooth[t - 4]
+            - 0.0962 * smooth[t - 6]
+        ) * coeff
+
+        q1[t] = (
+            0.0962 * detrender[t]
+            + 0.5769 * detrender[t - 2]
+            - 0.5769 * detrender[t - 4]
+            - 0.0962 * detrender[t - 6]
+        ) * coeff
+        i1[t] = detrender[t - 3]
+
+        ji[t] = (
+            0.0962 * i1[t] + 0.5769 * i1[t - 2] - 0.5769 * i1[t - 4] - 0.0962 * i1[t - 6]
+        ) * coeff
+        jq[t] = (
+            0.0962 * q1[t] + 0.5769 * q1[t - 2] - 0.5769 * q1[t - 4] - 0.0962 * q1[t - 6]
+        ) * coeff
+
+        i2_raw = i1[t] - jq[t]
+        q2_raw = q1[t] + ji[t]
+        i2[t] = 0.2 * i2_raw + 0.8 * i2[t - 1]
+        q2[t] = 0.2 * q2_raw + 0.8 * q2[t - 1]
+
+        re_raw = i2[t] * i2[t - 1] + q2[t] * q2[t - 1]
+        im_raw = i2[t] * q2[t - 1] - q2[t] * i2[t - 1]
+        re[t] = 0.2 * re_raw + 0.8 * re[t - 1]
+        im[t] = 0.2 * im_raw + 0.8 * im[t - 1]
+
+        if im[t] != 0.0 and re[t] != 0.0:
+            raw_period = 2.0 * math.pi / math.atan(im[t] / re[t])
+        else:
+            raw_period = prev_period
+        raw_period = max(0.67 * prev_period, min(1.5 * prev_period, raw_period))
+        raw_period = max(6.0, min(50.0, raw_period))
+        period[t] = 0.2 * raw_period + 0.8 * prev_period
+
+        output[t] = period[t]
+
+    return pl.Series("dominant_cycle", output, dtype=pl.Float64)

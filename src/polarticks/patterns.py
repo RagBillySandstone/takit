@@ -38,6 +38,7 @@ is_gravestone_doji              Doji with long upper shadow and open/close near 
 is_spinning_top                 Small non-doji body with substantial upper and lower wicks
 is_marubozu_bullish             All-body bullish candle with negligible upper and lower wicks
 is_marubozu_bearish             All-body bearish candle with negligible upper and lower wicks
+heiken_ashi                     Heiken-Ashi transformation — returns pl.DataFrame of smoothed OHLC
 """
 
 from __future__ import annotations
@@ -1448,4 +1449,80 @@ def is_marubozu_bearish(ohlc: pl.DataFrame, wick_limit: float = 0.05) -> pl.Seri
         (is_bear & tiny_upper & tiny_lower & nonzero_range)
         .fill_null(False)
         .alias("marubozu_bearish")
+    )
+
+
+# ---------------------------------------------------------------------------
+# Heiken-Ashi transformation
+# ---------------------------------------------------------------------------
+
+
+def heiken_ashi(ohlc: pl.DataFrame) -> pl.DataFrame:
+    """Heiken-Ashi candlestick transformation.
+
+    Heiken-Ashi ("average bar" in Japanese) recalculates OHLC using a
+    smoothing formula that reduces noise and makes trends easier to read.
+    Consecutive same-colour HA bars indicate a strong trend; bars with small
+    bodies and wicks on both sides suggest consolidation or transition.
+
+    Algorithm:
+        ha_close[t] = (open[t] + high[t] + low[t] + close[t]) / 4
+        ha_open[0]  = (open[0] + close[0]) / 2       (seed for bar 0)
+        ha_open[t]  = (ha_open[t−1] + ha_close[t−1]) / 2  (t ≥ 1)
+        ha_high[t]  = max(high[t], ha_open[t], ha_close[t])
+        ha_low[t]   = min(low[t],  ha_open[t], ha_close[t])
+
+    Null-prefix: none — all bars produce output.  Bar 0 is seeded from the
+    raw open/close midpoint; ha_open values converge quickly from bar 1.
+
+    Args:
+        ohlc: DataFrame with columns ``open``, ``high``, ``low``, ``close``.
+
+    Returns:
+        DataFrame with columns ``ha_open``, ``ha_high``, ``ha_low``,
+        ``ha_close`` (all Float64).
+
+    References:
+        - Nison, S. *Beyond Candlesticks* (1994), Chapter 18.
+        - Investopedia — Heikin-Ashi Technique:
+          https://www.investopedia.com/trading/heikin-ashi-better-candlestick/
+    """
+    o_list: list[float | None] = ohlc["open"].to_list()
+    h_list: list[float | None] = ohlc["high"].to_list()
+    lo_list: list[float | None] = ohlc["low"].to_list()
+    c_list: list[float | None] = ohlc["close"].to_list()
+    n = len(o_list)
+
+    ha_open: list[float | None] = [None] * n
+    ha_high: list[float | None] = [None] * n
+    ha_low: list[float | None] = [None] * n
+    ha_close: list[float | None] = [None] * n
+
+    for t in range(n):
+        o, h, lo, c = o_list[t], h_list[t], lo_list[t], c_list[t]
+        if o is None or h is None or lo is None or c is None:
+            continue
+
+        # HA close: average of all four OHLC prices.
+        hc = (o + h + lo + c) / 4.0
+        ha_close[t] = hc
+
+        # HA open: midpoint of prior HA bar; bar 0 seeded with raw midpoint.
+        if t == 0 or ha_open[t - 1] is None or ha_close[t - 1] is None:
+            ho = (o + c) / 2.0
+        else:
+            ho = (ha_open[t - 1] + ha_close[t - 1]) / 2.0
+        ha_open[t] = ho
+
+        # HA high/low extend the actual range when price moved outside the HA body.
+        ha_high[t] = max(h, ho, hc)
+        ha_low[t] = min(lo, ho, hc)
+
+    return pl.DataFrame(
+        {
+            "ha_open": pl.Series("ha_open", ha_open, dtype=pl.Float64),
+            "ha_high": pl.Series("ha_high", ha_high, dtype=pl.Float64),
+            "ha_low": pl.Series("ha_low", ha_low, dtype=pl.Float64),
+            "ha_close": pl.Series("ha_close", ha_close, dtype=pl.Float64),
+        }
     )

@@ -22,6 +22,7 @@ volume_roc        Volume Rate of Change — percentage change in trading volume
 vzo               Volume Zone Oscillator — signed EMA volume as % of total EMA volume
 mfi_bw            Market Facilitation Index (Bill Williams) — range per unit of volume
 volume_delta      Volume Delta — bar-level buy-minus-sell volume approximation
+session_range     Running session high/low for Asian, London, and New York sessions
 """
 
 from __future__ import annotations
@@ -976,6 +977,121 @@ def mfi_bw(ohlc_vol: pl.DataFrame) -> pl.Series:
     vol = ohlc_vol["volume"].cast(pl.Float64)
     safe_vol = vol.replace(0.0, float("nan"))
     return ((h - lo) / safe_vol).alias("mfi_bw")
+
+
+# ---------------------------------------------------------------------------
+# Session Range
+# ---------------------------------------------------------------------------
+
+
+def session_range(
+    ohlc_time: pl.DataFrame,
+    asian_start: int = 0,
+    asian_end: int = 9,
+    london_start: int = 8,
+    london_end: int = 17,
+    ny_start: int = 13,
+    ny_end: int = 22,
+) -> pl.DataFrame:
+    """Running session high/low for the Asian, London, and New York sessions.
+
+    For each bar that falls within a session's UTC-hour window the function
+    outputs the cumulative session high and low accumulated so far within that
+    session.  Bars outside the session window produce ``null`` for that
+    session's columns — forward-fill with ``.forward_fill()`` to carry the
+    last completed session range into the subsequent session (useful for
+    Asian-session-breakout and similar strategies).
+
+    Session entry is detected on the first bar whose UTC hour enters the
+    window.  Overlapping sessions (London and NY share 13:00–17:00) are
+    tracked independently.  Overnight sessions (``start > end``, e.g. 22–7)
+    are supported.
+
+    Default UTC windows (standard FX convention):
+        Asian:  00:00–09:00
+        London: 08:00–17:00
+        NY:     13:00–22:00
+
+    Args:
+        ohlc_time: DataFrame with columns ``high``, ``low``, and ``time``
+                   (Polars Datetime; tz-naive values are treated as UTC).
+        asian_start:  UTC hour at which the Asian session opens (default 0).
+        asian_end:    UTC hour at which the Asian session closes, exclusive
+                      (default 9).
+        london_start: UTC hour at which the London session opens (default 8).
+        london_end:   UTC hour at which the London session closes, exclusive
+                      (default 17).
+        ny_start:     UTC hour at which the NY session opens (default 13).
+        ny_end:       UTC hour at which the NY session closes, exclusive
+                      (default 22).
+
+    Returns:
+        DataFrame with six columns: ``asian_high``, ``asian_low``,
+        ``london_high``, ``london_low``, ``ny_high``, ``ny_low``.
+        Values are ``null`` when the bar lies outside that session.
+
+    Raises:
+        ValueError: If the ``time`` column is missing from *ohlc_time*.
+    """
+    if "time" not in ohlc_time.columns:
+        raise ValueError("session_range requires a 'time' column (Datetime).")
+
+    high_list: list[float | None] = ohlc_time["high"].to_list()
+    low_list: list[float | None] = ohlc_time["low"].to_list()
+    hour_list: list[int | None] = ohlc_time["time"].dt.hour().to_list()
+    n = len(high_list)
+
+    def _session_hl(start: int, end: int) -> tuple[list[float | None], list[float | None]]:
+        """Accumulate running H/L for one session window; null outside."""
+        s_high: list[float | None] = [None] * n
+        s_low: list[float | None] = [None] * n
+        run_h: float | None = None
+        run_l: float | None = None
+        in_sess: bool = False
+
+        for i in range(n):
+            hr = hour_list[i]
+            if hr is None:
+                in_sess = False
+                continue
+            # Normal intra-day window: AND check; overnight session (start > end)
+            # spans midnight and requires OR.
+            bar_in = start <= hr < end if start < end else hr >= start or hr < end
+
+            if bar_in:
+                h_val, l_val = high_list[i], low_list[i]
+                if not in_sess:
+                    # Entering a new session: reset the running range.
+                    run_h = h_val
+                    run_l = l_val
+                    in_sess = True
+                else:
+                    # Extend the running range with the current bar.
+                    if h_val is not None and (run_h is None or h_val > run_h):
+                        run_h = h_val
+                    if l_val is not None and (run_l is None or l_val < run_l):
+                        run_l = l_val
+                s_high[i] = run_h
+                s_low[i] = run_l
+            else:
+                in_sess = False
+
+        return s_high, s_low
+
+    asian_h, asian_l = _session_hl(asian_start, asian_end)
+    london_h, london_l = _session_hl(london_start, london_end)
+    ny_h, ny_l = _session_hl(ny_start, ny_end)
+
+    return pl.DataFrame(
+        {
+            "asian_high": pl.Series("asian_high", asian_h, dtype=pl.Float64),
+            "asian_low": pl.Series("asian_low", asian_l, dtype=pl.Float64),
+            "london_high": pl.Series("london_high", london_h, dtype=pl.Float64),
+            "london_low": pl.Series("london_low", london_l, dtype=pl.Float64),
+            "ny_high": pl.Series("ny_high", ny_h, dtype=pl.Float64),
+            "ny_low": pl.Series("ny_low", ny_l, dtype=pl.Float64),
+        }
+    )
 
 
 # ---------------------------------------------------------------------------

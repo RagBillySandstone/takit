@@ -39,6 +39,8 @@ apo                 Absolute Price Oscillator — difference of two EMAs in pric
 asi                 Accumulative Swing Index — Wilder's cumulative directional indicator
 pmo                 Price Momentum Oscillator — double-smoothed rate-of-change
 chande_trend_score  Chande Trend Score — % of prior bars the current close exceeds
+dss                 Double-smoothed Stochastic — Bressert's two-pass stochastic oscillator
+vwrsi               Volume-weighted RSI — Wilder RSI with volume-scaled gains/losses
 """
 
 from __future__ import annotations
@@ -1734,3 +1736,147 @@ def chande_trend_score(series: pl.Series, period: int = 20) -> pl.Series:
         window_size=period + 1,
         min_samples=period + 1,
     ).alias(f"cts_{period}")
+
+
+# ---------------------------------------------------------------------------
+# Double-smoothed Stochastic (Bressert DSS)
+# ---------------------------------------------------------------------------
+
+
+def dss(
+    ohlc: pl.DataFrame,
+    period: int = 13,
+    smooth: int = 8,
+) -> pl.DataFrame:
+    """Double-smoothed Stochastic — Bressert DSS oscillator.
+
+    The Bressert DSS applies the stochastic formula twice in sequence, with
+    EMA smoothing between passes, producing a smoother oscillator than the
+    classic stochastic that retains sensitivity to genuine turning points.
+    Values oscillate between 0 and 100; readings above 80 are considered
+    overbought and below 20 oversold; zero-line crossovers of the signal
+    line are entry signals.
+
+    Algorithm:
+        1. First stochastic over *period* bars:
+               HH   = rolling_max(high, period)
+               LL   = rolling_min(low,  period)
+               %K   = (close − LL) / (HH − LL) × 100
+        2. First EMA smoothing:
+               ema1 = EMA(%K, smooth)
+        3. Second stochastic applied to ema1:
+               HH2  = rolling_max(ema1, period)
+               LL2  = rolling_min(ema1, period)
+               DSS  = (ema1 − LL2) / (HH2 − LL2) × 100
+        4. Signal line:
+               signal = EMA(DSS, smooth)
+
+    Null-prefix: ``2 × (period − 1) + 2 × (smooth − 1)`` bars for the signal
+    (two rolling windows + two EMA passes).
+
+    Args:
+        ohlc: DataFrame with columns ``high``, ``low``, ``close``.
+        period: Stochastic lookback window (default 13).
+        smooth: EMA smoothing period applied at each of the two passes (default 8).
+
+    Returns:
+        DataFrame with columns ``dss`` and ``dss_signal``.
+
+    Raises:
+        ValueError: If ``period < 1`` or ``smooth < 1``.
+
+    References:
+        - Bressert, W. "Stochastic Pop and Drop," *Stocks & Commodities* (1991).
+        - Investopedia — Stochastic Oscillator:
+          https://www.investopedia.com/terms/s/stochasticoscillator.asp
+    """
+    _validate_period(period, "DSS")
+    _validate_period(smooth, "DSS smooth")
+
+    high = ohlc["high"]
+    low = ohlc["low"]
+    close = ohlc["close"]
+
+    # First stochastic pass: normalise close within the period's H/L range.
+    hh = high.rolling_max(window_size=period, min_samples=period)
+    ll = low.rolling_min(window_size=period, min_samples=period)
+    hl_range = hh - ll
+    # Flat markets (hh == ll) produce 0/0 = NaN; treat as 50 (neutral midpoint).
+    stoch_k = ((close - ll) / hl_range.replace(0.0, float("nan")) * 100.0).fill_nan(50.0)
+
+    # First EMA smoothing pass reduces noise before the second stochastic.
+    ema1 = ema(stoch_k, smooth)
+
+    # Second stochastic applied to the smoothed stochastic.
+    hh2 = ema1.rolling_max(window_size=period, min_samples=period)
+    ll2 = ema1.rolling_min(window_size=period, min_samples=period)
+    hl_range2 = hh2 - ll2
+    dss_vals = (
+        ((ema1 - ll2) / hl_range2.replace(0.0, float("nan")) * 100.0).fill_nan(50.0).alias("dss")
+    )
+
+    # Signal line from a final EMA smoothing of the DSS output.
+    dss_signal = ema(dss_vals, smooth).alias("dss_signal")
+
+    return pl.DataFrame({"dss": dss_vals, "dss_signal": dss_signal})
+
+
+# ---------------------------------------------------------------------------
+# Volume-weighted RSI
+# ---------------------------------------------------------------------------
+
+
+def vwrsi(ohlc_vol: pl.DataFrame, period: int = 14) -> pl.Series:
+    """Volume-weighted RSI (VW-RSI).
+
+    VW-RSI replaces the plain price change used in standard RSI with a
+    volume-weighted price change: each bar's up-move or down-move is
+    multiplied by the bar's volume before Wilder smoothing.  Bars with high
+    volume on up-moves push the oscillator toward 100; high volume on
+    down-moves push it toward 0.  This links oscillator momentum to actual
+    market participation, making divergences more meaningful than with plain RSI.
+
+    Algorithm:
+        delta[t]   = close[t] − close[t−1]
+        up_vw[t]   = max(delta[t], 0) × volume[t]   (volume on up bars)
+        down_vw[t] = max(−delta[t], 0) × volume[t]  (volume on down bars)
+        avg_up     = Wilder_smooth(up_vw,   period)
+        avg_down   = Wilder_smooth(down_vw, period)
+        RS         = avg_up / avg_down
+        VW-RSI     = 100 − 100 / (1 + RS)
+
+    Null-prefix: ``period`` bars (1 from diff + period − 1 from Wilder smoothing).
+
+    Args:
+        ohlc_vol: DataFrame with columns ``close`` and ``volume``.
+        period: Wilder smoothing period (default 14; must be ≥ 2).
+
+    Returns:
+        Series of VW-RSI values in [0, 100] named ``vwrsi_{period}``.
+
+    Raises:
+        ValueError: If ``period < 2``.
+
+    References:
+        - Blau, W. *Momentum, Direction, and Divergence* (1995), Chapter 6.
+        - Investopedia — Relative Strength Index (RSI):
+          https://www.investopedia.com/terms/r/rsi.asp
+    """
+    _validate_period(period, "VW-RSI", min_period=2)
+
+    close = ohlc_vol["close"]
+    vol = ohlc_vol["volume"].cast(pl.Float64)
+
+    # Bar-to-bar price changes; null propagates from diff at bar 0.
+    delta = close.diff(n=1)
+
+    # Volume-weighted directional flows; null × volume → null for bar 0.
+    up_vw = delta.clip(lower_bound=0.0) * vol
+    down_vw = (-delta).clip(lower_bound=0.0) * vol
+
+    avg_up = wilder_smooth(up_vw, period)
+    avg_down = wilder_smooth(down_vw, period)
+
+    # All-up bars → avg_down == 0 → RS = inf → VW-RSI = 100.
+    rs = avg_up / avg_down.replace(0.0, float("nan"))
+    return (100.0 - 100.0 / (1.0 + rs)).fill_nan(100.0).alias(f"vwrsi_{period}")
