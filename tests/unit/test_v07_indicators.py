@@ -17,7 +17,7 @@ Each test class verifies:
 from __future__ import annotations
 
 import math
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import polars as pl
 import pytest
@@ -328,9 +328,7 @@ class TestHeikenAshi:
 
     def test_single_bar(self) -> None:
         """Single-bar input should produce a valid row with no prior HA state."""
-        single = pl.DataFrame(
-            {"open": [10.0], "high": [12.0], "low": [8.0], "close": [11.0]}
-        )
+        single = pl.DataFrame({"open": [10.0], "high": [12.0], "low": [8.0], "close": [11.0]})
         result = heiken_ashi(single)
         assert len(result) == 1
         assert result["ha_open"][0] == pytest.approx(10.5)  # (10+11)/2
@@ -344,7 +342,7 @@ class TestHeikenAshi:
 
 def _make_timed_ohlcv(n_hours: int = 48) -> pl.DataFrame:
     """Build an hourly OHLCV frame spanning n_hours starting at 2024-01-15 00:00 UTC."""
-    base = datetime(2024, 1, 15, 0, 0, 0, tzinfo=timezone.utc)
+    base = datetime(2024, 1, 15, 0, 0, 0, tzinfo=UTC)
     times = [base + timedelta(hours=i) for i in range(n_hours)]
     closes = [100.0 + i * 0.1 for i in range(n_hours)]
     highs = [c + 0.5 for c in closes]

@@ -1271,9 +1271,12 @@ def mama(
             continue
 
         # 4-bar weighted price smoothing; missing prior bars fall back to price.
-        p1 = raw[t - 1] if t >= 1 and raw[t - 1] is not None else price
-        p2 = raw[t - 2] if t >= 2 and raw[t - 2] is not None else price
-        p3 = raw[t - 3] if t >= 3 and raw[t - 3] is not None else price
+        _r1 = raw[t - 1] if t >= 1 else None
+        _r2 = raw[t - 2] if t >= 2 else None
+        _r3 = raw[t - 3] if t >= 3 else None
+        p1: float = _r1 if _r1 is not None else price
+        p2: float = _r2 if _r2 is not None else price
+        p3: float = _r3 if _r3 is not None else price
         smooth[t] = (4.0 * price + 3.0 * p1 + 2.0 * p2 + p3) / 10.0
 
         # Seed MAMA/FAMA with the raw price during the HT warm-up window.
@@ -1415,9 +1418,12 @@ def dominant_cycle_period(series: pl.Series) -> pl.Series:
             continue
 
         # 4-bar weighted smoothing with fallback for bars near the start.
-        p1 = raw[t - 1] if t >= 1 and raw[t - 1] is not None else price
-        p2 = raw[t - 2] if t >= 2 and raw[t - 2] is not None else price
-        p3 = raw[t - 3] if t >= 3 and raw[t - 3] is not None else price
+        _r1 = raw[t - 1] if t >= 1 else None
+        _r2 = raw[t - 2] if t >= 2 else None
+        _r3 = raw[t - 3] if t >= 3 else None
+        p1: float = _r1 if _r1 is not None else price
+        p2: float = _r2 if _r2 is not None else price
+        p3: float = _r3 if _r3 is not None else price
         smooth[t] = (4.0 * price + 3.0 * p1 + 2.0 * p2 + p3) / 10.0
 
         if t < 6:

@@ -1508,10 +1508,9 @@ def heiken_ashi(ohlc: pl.DataFrame) -> pl.DataFrame:
         ha_close[t] = hc
 
         # HA open: midpoint of prior HA bar; bar 0 seeded with raw midpoint.
-        if t == 0 or ha_open[t - 1] is None or ha_close[t - 1] is None:
-            ho = (o + c) / 2.0
-        else:
-            ho = (ha_open[t - 1] + ha_close[t - 1]) / 2.0
+        _prev_ho = ha_open[t - 1] if t > 0 else None
+        _prev_hc = ha_close[t - 1] if t > 0 else None
+        ho = (o + c) / 2.0 if _prev_ho is None or _prev_hc is None else (_prev_ho + _prev_hc) / 2.0
         ha_open[t] = ho
 
         # HA high/low extend the actual range when price moved outside the HA body.
