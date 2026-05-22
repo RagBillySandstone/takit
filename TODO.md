@@ -196,3 +196,4 @@
 - [x] **`py.typed` marker** — already present; verify downstream mypy usage works end-to-end.
 - [x] **Bump to v0.5.0** — update `pyproject.toml` version, add CHANGELOG entry, publish to PyPI.
 - [x] **Bump to v0.6.0** — update `pyproject.toml` version, add CHANGELOG entry, publish to PyPI. Fixed Supertrend direction, VWAP session detection, and crossover/crossunder bar-0 before publishing.
+- [x] **Bump to v0.7.0** — added MAMA/FAMA, Dominant Cycle Period, DSS, VW-RSI, Session Range, Heiken-Ashi; fixed mypy strict-mode errors; published to PyPI.
