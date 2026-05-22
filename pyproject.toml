@@ -1,6 +1,6 @@
 [project]
 name = "polarticks"
-version = "0.6.0"
+version = "0.7.0"
 description = "Polars-native technical analysis indicator library"
 readme = "README.md"
 authors = [

@@ -7,6 +7,29 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [0.7.0] — 2026-05-22
+
+### Added
+
+#### Moving Averages
+- `mama(series, fast_limit=0.5, slow_limit=0.05)` — MESA Adaptive Moving Average and Following Adaptive MA (Ehlers 2004); adapts smoothing constant in real time via the Hilbert Transform Homodyne Discriminator; returns `DataFrame[mama, fama]`; 6 leading nulls
+- `dominant_cycle_period(series)` — Hilbert Transform Dominant Cycle Period; estimates the dominant market cycle in bars [6–50] using the same Homodyne Discriminator pipeline as MAMA; 6 leading nulls
+
+#### Momentum
+- `dss(ohlc, period=13, smooth=8)` — Double-smoothed Stochastic (Bressert DSS); applies the stochastic formula twice with EMA smoothing between passes; returns `DataFrame[dss, dss_signal]`; `2×(period−1) + 2×(smooth−1)` leading nulls
+- `vwrsi(ohlc_vol, period=14)` — Volume-weighted RSI; replaces plain price deltas with `volume × |delta|` in the Wilder gain/loss smoothing; `period` leading nulls
+
+#### Volume
+- `session_range(ohlc_time, asian_start=0, asian_end=9, london_start=8, london_end=17, ny_start=13, ny_end=22)` — Running session high/low for Asian, London, and New York UTC windows; values are `null` outside each session; overnight sessions (`start > end`) supported; forward-fill to carry completed session range forward
+
+#### Candlestick / Price Transform
+- `heiken_ashi(ohlc)` — Heiken-Ashi candlestick transformation; returns `DataFrame[ha_open, ha_high, ha_low, ha_close]`; bar 0 seeded from raw open/close midpoint; no leading nulls
+
+### Tests
+- 52 new unit tests in `test_v07_indicators.py` (1151 total)
+
+---
+
 ## [0.6.0] — 2026-05-20
 
 ### Added
